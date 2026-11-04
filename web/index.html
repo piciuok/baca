@@ -90,11 +90,13 @@ body.resizing, body.resizing *{cursor:ew-resize !important}
 .set-list .item button{flex:none}
 
 /* ---------- activity bar ---------- */
-.actbar{position:relative;height:44px;background:var(--panel);border:1px solid var(--line);border-radius:6px;margin-top:6px;overflow:hidden}
-.app{position:absolute;top:4px;height:8px;border-radius:2px;opacity:.85}
+.actbar{position:relative;height:76px;background:var(--panel);border:1px solid var(--line);border-radius:6px;margin-top:6px;overflow:hidden}
+.app{position:absolute;top:5px;height:14px;border-radius:3px;opacity:.85}
 .app.idle{background:repeating-linear-gradient(135deg,#3a3f48 0 3px,transparent 3px 6px) !important;opacity:1}
-.sug{position:absolute;top:16px;bottom:4px;border:1px dashed;border-radius:4px;padding:2px 6px;font-size:11px;font-weight:600;white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis;cursor:copy;background:rgba(255,255,255,.04)}
+.sug{position:absolute;top:25px;bottom:5px;border:1px dashed;border-radius:4px;padding:3px 7px;font-size:12px;font-weight:600;white-space:nowrap;
+  overflow:hidden;cursor:copy;background:rgba(255,255,255,.04)}
+.sug .t,.sug .d{display:block;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.sug .d{font-weight:400;font-size:11px;color:var(--muted)}
 .sug:hover{background:rgba(255,255,255,.12)}
 .sug.taken{opacity:.25;cursor:default}
 .actinfo{display:flex;gap:10px;align-items:center;font-size:12px;margin-top:3px;min-height:22px}
@@ -614,7 +616,9 @@ function renderActivity() {
     el.style.left = pct(Math.max(g.start, AXIS_START)) + '%';
     el.style.width = (pct(Math.min(g.end, AXIS_END)) - pct(Math.max(g.start, AXIS_START))) + '%';
     el.style.borderColor = el.style.color = g.ticket ? colorOf(g.ticket) : 'var(--muted)';
-    el.textContent = g.ticket || (g.meeting ? '📞 ' + g.meeting.replace(/^[^·]*· /, '') : '?');
+    el.innerHTML = '<span class="t"></span><span class="d"></span>';
+    el.querySelector('.t').textContent = g.ticket || (g.meeting ? '📞 ' + g.meeting.replace(/^[^·]*· /, '') : '?');
+    el.querySelector('.d').textContent = dur(g.end - g.start).replace(/^0h /, '') + (g.sources[0] ? ' · ' + g.sources[0] : g.apps[0] ? ' · ' + g.apps[0].name : '');
     actbar.appendChild(el);
   });
   $('#actAll').hidden = !open;
