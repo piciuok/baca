@@ -2,6 +2,7 @@ package activity
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -427,5 +428,28 @@ func TestOccurrences(t *testing.T) {
 	}
 	if n := len(occurrences(start, "FREQ=MONTHLY", time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC))); n != 12 {
 		t.Fatal(n)
+	}
+}
+
+func TestSlackProbe(t *testing.T) {
+	at := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search.messages" || r.Header.Get("Authorization") != "Bearer xoxp-1" || r.URL.Query().Get("query") != "from:me after:2026-11-02" {
+			io.WriteString(w, `{"ok":false,"error":"invalid_auth"}`)
+			return
+		}
+		fmt.Fprintf(w, `{"ok":true,"messages":{"matches":[
+		 {"ts":"%d.000100","text":"ABC-4 is ready\nfor review","channel":{"name":"team"}},
+		 {"ts":"%d.000200","text":"thanks","channel":{"name":"x","is_im":true}}],"paging":{"pages":1}}}`, at.Unix(), at.Add(-72*time.Hour).Unix())
+	}))
+	defer srv.Close()
+	p := NewSlackProbe(SlackConfig{Token: "xoxp-1", BaseURL: srv.URL})
+	out, err := p.Tick(context.Background(), at.Add(2*time.Hour).In(time.Local))
+	if err != nil || len(out) != 1 || out[0].Title != "ABC-4 is ready for review" || out[0].Repo != "#team" || out[0].App != "Slack" {
+		t.Fatalf("%v %+v", err, out)
+	}
+	p.cfg.Token = "bad"
+	if _, err := p.Tick(context.Background(), at); err == nil || err.Error() != "slack: invalid_auth" {
+		t.Fatal(err)
 	}
 }

@@ -59,6 +59,7 @@ type Config struct {
 	Jira     JiraConfig     `json:"jira"`
 	GitHub   GitHubConfig   `json:"github"`
 	Calendar CalendarConfig `json:"calendar"`
+	Slack    SlackConfig    `json:"slack"`
 
 	JiraAuth JiraAuth `json:"-"` // filled from the Jira/Tempo credentials of config.json
 }
@@ -137,6 +138,9 @@ func (c Config) Probes() []Probe {
 			cal.Email = c.JiraAuth.Email
 		}
 		out = append(out, NewCalendarProbe(cal))
+	}
+	if on(c.Slack.Enabled) && c.Slack.Token != "" {
+		out = append(out, NewSlackProbe(c.Slack))
 	}
 	if on(c.Jira.Enabled) && c.JiraAuth.Token != "" {
 		out = append(out, NewJiraProbe(c.JiraAuth))
