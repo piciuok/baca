@@ -198,7 +198,7 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
       <div class="field"><label for="fTicket">Ticket</label><input id="fTicket" list="tickets" placeholder="ABC-123" autocomplete="off"></div>
       <div class="field"><label for="fDesc">Description <span class="muted">(empty = “Continue task”)</span></label>
         <textarea id="fDesc" rows="4" placeholder="Prepare ..., fix ..., verify ..."></textarea></div>
-      <div class="row"><span id="fTime" class="muted"></span><span style="flex:1"></span><a id="fJira" class="btn" target="_blank" rel="noopener" hidden></a><button id="fDescribe" title="Write this block's description from what you did">✨ Describe</button><button id="fDel" class="danger">Delete block</button></div>
+      <div class="row"><span id="fTime" class="muted"></span><span style="flex:1"></span><a id="fJira" class="btn" target="_blank" rel="noopener" hidden></a><button id="fMerge" hidden title="Merge with the touching blocks of the same ticket">⇆ Merge</button><button id="fDescribe" title="Write this block's description from what you did">✨ Describe</button><button id="fDel" class="danger">Delete block</button></div>
       <div class="row" id="fTempo" hidden style="margin-top:8px"><span style="flex:1"></span>
         <button id="fUnlog" class="danger" title="Deletes the worklog in Tempo; the block stays, not logged">Delete from Tempo</button>
         <button id="fEdit">Edit in Tempo</button><button id="fCancel" hidden>Cancel</button><button id="fSave" class="primary" hidden>Save to Tempo</button></div>
@@ -673,7 +673,10 @@ function acceptSuggestions(list) {
   snapshot();
   blocks.push(...add);
   blocks.sort((x, y) => x.start - y.start);
-  selId = add[0].id; formFor = undefined;
+  // a suggestion next to a block of the same ticket extends it instead of adding a second one
+  let first = null;
+  for (const a of add) if (a.ticket && blocks.includes(a)) { const m = mergeRun(a); first ??= m; }
+  selId = (first || add[0]).id; formFor = undefined;
   changed(); render();
   if (add.length === 1 && !add[0].ticket) $('#fTicket').focus();
 }
@@ -1027,6 +1030,44 @@ fDesc.addEventListener('keydown', e => {
   if (e.key === 'Enter') { e.preventDefault(); if (editLogged && sel()?.id === editLogged) $('#fSave').click(); else fDesc.blur(); }
   if (e.key === 'Escape' && editLogged) { e.stopPropagation(); $('#fCancel').click(); }
 });
+// ---------- merging touching blocks of one ticket ----------
+// the open blocks of b's ticket that touch b, directly or through each other, in order
+function touchingRun(b) {
+  if (!b || b.logged) return [b];
+  const run = [b];
+  for (let cur = b, x; (x = blocks.find(o => !o.logged && o.ticket === b.ticket && o.end === cur.start)); cur = x) run.unshift(x);
+  for (let cur = b, x; (x = blocks.find(o => !o.logged && o.ticket === b.ticket && o.start === cur.end)); cur = x) run.push(x);
+  return run;
+}
+// descriptions in order, without "Continue task" fillers and repeats; distinct ones joined by "; "
+function joinDescs(descs) {
+  const out = [];
+  for (const d of descs) {
+    const t = (d || '').trim();
+    if (!t || /^continue task\.?$/i.test(t) || out.includes(t)) continue;
+    out.push(t);
+  }
+  return out.join('; ');
+}
+// merges b's run into its first block; returns that block (b itself when there was nothing to merge)
+function mergeRun(b) {
+  const run = touchingRun(b);
+  if (run.length < 2) return b;
+  const first = run[0];
+  first.end = run[run.length - 1].end;
+  first.desc = joinDescs(run.map(x => x.desc));
+  const gone = new Set(run.slice(1).map(x => x.id));
+  blocks = blocks.filter(x => !gone.has(x.id));
+  return first;
+}
+$('#fMerge').onclick = () => {
+  const b = sel(); if (!b || touchingRun(b).length < 2) return;
+  snapshot();
+  const m = mergeRun(b);
+  selId = m.id; formFor = undefined; changed(); render();
+  toast(`Merged into ${fmt(m.start)}–${fmt(m.end)} ${m.ticket || '???'}.`);
+};
+
 function deleteSelected() {
   const b = sel(); if (!b) return;
   if (b.logged) return toast('A logged block is not deleted – delete the worklog in Tempo and the marker in the file first.', true);
@@ -1192,6 +1233,9 @@ function renderDescribing() {
   $('#descBtn').disabled = describing; $('#descBtn').textContent = describing ? '✨ Describing…' : '✨ Describe day';
   const b = sel();
   $('#fDescribe').hidden = !b || b.logged || !b.ticket;
+  const run = b ? touchingRun(b) : [];
+  $('#fMerge').hidden = run.length < 2;
+  if (run.length >= 2) $('#fMerge').title = `Merge into ${fmt(run[0].start)}–${fmt(run[run.length - 1].end)} (${run.length} blocks of ${b.ticket || '???'})`;
   $('#fDescribe').disabled = describing;
 }
 function openDescDialog(items) {
