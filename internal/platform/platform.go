@@ -1,0 +1,85 @@
+// Package platform is the OS glue for the tray app: start at login, relaunch after an update,
+// notifications, dialogs and opening URLs (macOS: launchd/osascript, Linux: XDG/notify-send).
+package platform
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+)
+
+const launchLabel = "pl.piciuok.baca"
+
+// Notification is a fire-and-forget message; Open (URL) is opened on click where supported.
+type Notification struct {
+	Title   string
+	Message string
+	Open    string
+}
+
+// StateDir holds logs and update status (~/.local/state/baca).
+func StateDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "state", "baca")
+}
+
+func has(bin string) bool {
+	_, err := exec.LookPath(bin)
+	return err == nil
+}
+
+func trunc(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// relaunchScript waits for the old process ($1) to exit, so the new one can take the port,
+// then starts the new binary ($0).
+const relaunchScript = `while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec "$0" tray --foreground`
+
+// spawnTray starts a detached `exe tray` that waits for this process to exit. A fresh
+// process (not exec in place) is what gets the tray icon registered again.
+func spawnTray(exe string) error {
+	cmd := exec.Command("/bin/sh", "-c", relaunchScript, exe, strconv.Itoa(os.Getpid()))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd.Start()
+}
+
+// detachTray starts `exe tray --foreground` in its own session with output appended to the
+// logs in StateDir, and does not wait for it.
+func detachTray(exe string) error {
+	dir := StateDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	open := func(name string) (*os.File, error) {
+		return os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	}
+	out, err := open("tray.out.log")
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	errf, err := open("tray.err.log")
+	if err != nil {
+		return err
+	}
+	defer errf.Close()
+	cmd := exec.Command(exe, "tray", "--foreground")
+	cmd.Stdout, cmd.Stderr = out, errf
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+func xmlEsc(s string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
+}
