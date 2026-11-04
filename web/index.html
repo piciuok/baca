@@ -154,6 +154,9 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
       <div class="field"><label for="fDesc">Description <span class="muted">(empty = “Continue task”)</span></label>
         <textarea id="fDesc" rows="4" placeholder="Prepare ..., fix ..., verify ..."></textarea></div>
       <div class="row"><span id="fTime" class="muted"></span><span style="flex:1"></span><a id="fJira" class="btn" target="_blank" rel="noopener" hidden></a><button id="fDel" class="danger">Delete block</button></div>
+      <div class="row" id="fTempo" hidden style="margin-top:8px"><span style="flex:1"></span>
+        <button id="fUnlog" class="danger" title="Deletes the worklog in Tempo; the block stays, not logged">Delete from Tempo</button>
+        <button id="fEdit">Edit in Tempo</button><button id="fCancel" hidden>Cancel</button><button id="fSave" class="primary" hidden>Save to Tempo</button></div>
     </div>
     <datalist id="tickets"></datalist>
   </section>
@@ -571,17 +574,28 @@ function renderSum() {
 // ---------- block editing ----------
 const fTicket = $('#fTicket'), fDesc = $('#fDesc');
 let editSnap = null;
+let editLogged = null, busyTempo = false, unlogArmed = null;   // editing a logged block
 function renderForm() {
   const b = sel();
   $('#noSel').hidden = !!b; $('#form').hidden = !b;
   if (b && formFor !== b.id) { fTicket.value = b.ticket; fDesc.value = b.desc; }
   formFor = b ? b.id : null;
   if (b) {
-    fTicket.disabled = fDesc.disabled = !!b.logged;
+    if (editLogged && editLogged !== b.id) editLogged = null;
+    const editing = editLogged === b.id;
+    fTicket.disabled = fDesc.disabled = !!b.logged && !editing;
     $('#fDel').hidden = !!b.logged;
     $('#fLocked').hidden = !b.logged;
-    $('#fLocked').textContent = b.logged ? `Logged in Tempo (#${b.worklogId || '?'}). Editing is locked.` : '';
-  }
+    $('#fLocked').textContent = !b.logged ? '' : editing
+      ? `Editing Tempo worklog #${b.worklogId}. The change goes to Tempo and the file on “Save to Tempo”.`
+      : `Logged in Tempo (#${b.worklogId || '?'}). To change the time, “Delete from Tempo” and log it again.`;
+    const tempoOk = !!b.logged && !!b.worklogId && cfg.tempo;
+    $('#fTempo').hidden = !tempoOk;
+    $('#fEdit').hidden = $('#fUnlog').hidden = editing || busyTempo;
+    $('#fSave').hidden = $('#fCancel').hidden = !editing;
+    $('#fSave').disabled = $('#fCancel').disabled = busyTempo;
+    if (unlogArmed !== b.id) $('#fUnlog').textContent = 'Delete from Tempo';
+  } else editLogged = null;
   renderJiraLink(b);
   renderFormTime();
 }
@@ -617,8 +631,36 @@ fDesc.addEventListener('input', () => {
   b.desc = fDesc.value.replace(/\s*\n\s*/g, ' ');
   changed(); renderTimeline(); renderOutput();
 });
-fTicket.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fDesc.focus(); } });
-fDesc.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fDesc.blur(); } });
+// A logged block: the change goes to Tempo first; the server changes the file only once Tempo took it.
+async function tempoCall(action, extra) {
+  const b = sel(); if (!b || !b.logged) return;
+  await flush();
+  const key = `${b.start}-${b.end}-${b.ticket}`, at = b.start;
+  busyTempo = true; renderForm();
+  try {
+    const res = await api('POST', `/api/days/${day}/logged/${action}`, { hash, key, ...extra });
+    editLogged = null; fromView(res.day); history = []; future = [];
+    selId = blocks.find(x => x.start === at)?.id || null;
+    toast(action === 'update' ? 'Saved to Tempo and the file.' : 'Deleted from Tempo – the block is open again.');
+    refreshDays();
+  } catch (e) {
+    if (e.data?.day) { fromView(e.data.day); selId = blocks.find(x => x.start === at)?.id || null; }
+    toast(e.message, true);
+  } finally { busyTempo = false; unlogArmed = null; formFor = undefined; render(); }
+}
+$('#fEdit').onclick = () => { const b = sel(); if (!b) return; editLogged = b.id; unlogArmed = null; renderForm(); fDesc.focus(); };
+$('#fCancel').onclick = () => { editLogged = null; formFor = undefined; renderForm(); };
+$('#fSave').onclick = () => tempoCall('update', { ticket: fTicket.value, desc: fDesc.value });
+$('#fUnlog').onclick = () => {
+  const b = sel(); if (!b) return;
+  if (unlogArmed !== b.id) { unlogArmed = b.id; $('#fUnlog').textContent = `Really delete #${b.worklogId} from Tempo?`; return; }
+  tempoCall('delete');
+};
+fTicket.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fDesc.focus(); } if (e.key === 'Escape' && editLogged) { e.stopPropagation(); $('#fCancel').click(); } });
+fDesc.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); if (editLogged && sel()?.id === editLogged) $('#fSave').click(); else fDesc.blur(); }
+  if (e.key === 'Escape' && editLogged) { e.stopPropagation(); $('#fCancel').click(); }
+});
 function deleteSelected() {
   const b = sel(); if (!b) return;
   if (b.logged) return toast('A logged block is not deleted – delete the worklog in Tempo and the marker in the file first.', true);
@@ -814,7 +856,7 @@ document.addEventListener('keydown', e => {
 
 // The file may have changed in an editor – reload the day on return to the window if nothing waits to be saved.
 addEventListener('focus', async () => {
-  if (dirty || saving || drag) return;
+  if (dirty || saving || drag || editLogged || busyTempo) return;
   try {
     const v = await api('GET', `/api/days/${day}`);
     if (v.hash !== hash && !dirty && !saving) { fromView(v); history = []; future = []; render(); toast('Loaded changes from the file.'); }

@@ -25,7 +25,7 @@ Configuration: `config.json` next to the binary (with `go run`, in the working d
 ```
 
 - Newest day on top. Day headers use Polish weekday names (`@Wtorek 03.11`); the year is optional (`@Wtorek 03.11.2026`). Without it, the latest year that keeps the file in descending order is taken.
-- `*` at the start and `#~<tempoWorklogId>~#` at the end mark an entry logged to Tempo. Such a block is locked in the UI and is never sent twice.
+- `*` at the start and `#~<tempoWorklogId>~#` at the end mark an entry logged to Tempo. Such a block is never sent twice and cannot be dragged. “Edit in Tempo” changes its ticket and description (`PUT` in Tempo, then the file). “Delete from Tempo” deletes the worklog in Tempo and keeps the block as open, so you can fix the time and log it again.
 - A day's status follows from its entries: logged (all with `*`), partial or open.
 - An empty description is written as `Continue task`, a missing ticket as `???` (such an entry is never logged).
 - Lines the parser does not understand (`#` comments, notes) stay in the file. A save changes only the edited day and moves that day's comments under its header.
