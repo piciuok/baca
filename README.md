@@ -80,6 +80,16 @@ day.
 - **Totals** (bottom): time per ticket, the daily target as a red line, overtime past it.
 - **Worklog**: the day as text, ready to copy, and “Log to Tempo”.
 
+## Descriptions by an agent
+
+“✨ Describe day” (or “✨ Describe” on one block) asks Claude Code or Codex, whichever you are logged in to, to
+write the descriptions of the day's open blocks, the way you would at the end of the day:
+
+- baca gathers what happened during each block: your commits in the watched repos (around its time or naming its ticket), the prompts you gave Claude Code and Codex there, the window titles with minutes, GitLab, GitHub and Jira events and meetings. The last three days of your worklog are the style example, so the agent follows your phrasing and knows which tickets continue.
+- Empty descriptions are filled at once (⌘Z undoes). Blocks that already have one get a proposal you tick, edit or reject. Logged blocks are left alone; change those with “Edit in Tempo”.
+- The agent gets this as text only: `claude -p --tools "" --max-turns 1 --no-session-persistence` or `codex exec --sandbox read-only --ephemeral`, run in an empty temporary directory. It has no tools, reads no files and keeps no session. The evidence does go to Anthropic or OpenAI through your CLI. Agent sessions outside the watched repos are never included.
+- Settings → Descriptions (AI): the agent, the model and the style (by default: short verb phrases, “Continue task” for later blocks of a ticket, “Continue task, …” for a ticket from earlier days).
+
 ## Activity probes
 
 Each probe runs in its own loop and writes spans to `activity/YYYY-MM-DD.jsonl` next to the worklog

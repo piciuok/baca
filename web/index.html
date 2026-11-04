@@ -24,7 +24,7 @@ a.btn{display:inline-block;background:var(--panel);border:1px solid var(--line);
 a.btn:hover{border-color:#3b414c}
 .loglist a{color:var(--accent);text-decoration:none}
 button.primary{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:600}
-input,textarea{background:#0f1114;border:1px solid var(--line);border-radius:6px;padding:5px 8px;outline:none}
+input,textarea,select{background:#0f1114;border:1px solid var(--line);border-radius:6px;padding:5px 8px;outline:none}
 input:focus,textarea:focus{border-color:var(--accent)}
 input:disabled,textarea:disabled{opacity:.6}
 input[type=date]{color-scheme:dark}
@@ -139,6 +139,9 @@ dialog textarea{width:100%;height:280px;font:12px/1.5 ui-monospace,Menlo,monospa
 .loglist li span:last-child{overflow:hidden;text-overflow:ellipsis}
 .loglist li input{margin:0 2px 0 0}
 .loglist li.sub{padding-left:26px;font-size:11px}
+.desc-item{border-top:1px solid var(--line);padding:8px 0}
+.desc-item .old{color:var(--muted);text-decoration:line-through;font-size:12px;margin:4px 0 4px 24px}
+.desc-item textarea{width:calc(100% - 24px);margin-left:24px;height:54px;font:12px/1.4 ui-monospace,Menlo,monospace}
 .loglist .bad{color:var(--yellow)}
 .loglist .err{color:var(--red)}
 .loglist .good{color:var(--green)}
@@ -164,6 +167,7 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
   <button id="redo" title="Redo (⇧⌘Z)">↷</button>
   <button id="importBtn">Import worklog</button>
   <button id="settingsBtn" title="Working hours, accounts, tokens, probes">⚙</button>
+  <button id="descBtn" title="Write descriptions of the day's open blocks with Claude Code or Codex from what you did">✨ Describe day</button>
   <button id="syncBtn" title="Compare the day with your worklogs in Tempo and take Tempo's version">Sync from Tempo</button>
   <button id="logBtn" class="primary">Log to Tempo</button>
 </header>
@@ -194,7 +198,7 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
       <div class="field"><label for="fTicket">Ticket</label><input id="fTicket" list="tickets" placeholder="ABC-123" autocomplete="off"></div>
       <div class="field"><label for="fDesc">Description <span class="muted">(empty = “Continue task”)</span></label>
         <textarea id="fDesc" rows="4" placeholder="Prepare ..., fix ..., verify ..."></textarea></div>
-      <div class="row"><span id="fTime" class="muted"></span><span style="flex:1"></span><a id="fJira" class="btn" target="_blank" rel="noopener" hidden></a><button id="fDel" class="danger">Delete block</button></div>
+      <div class="row"><span id="fTime" class="muted"></span><span style="flex:1"></span><a id="fJira" class="btn" target="_blank" rel="noopener" hidden></a><button id="fDescribe" title="Write this block's description from what you did">✨ Describe</button><button id="fDel" class="danger">Delete block</button></div>
       <div class="row" id="fTempo" hidden style="margin-top:8px"><span style="flex:1"></span>
         <button id="fUnlog" class="danger" title="Deletes the worklog in Tempo; the block stays, not logged">Delete from Tempo</button>
         <button id="fEdit">Edit in Tempo</button><button id="fCancel" hidden>Cancel</button><button id="fSave" class="primary" hidden>Save to Tempo</button></div>
@@ -229,6 +233,14 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
     <div id="setFoot"><span id="setInfo" class="muted" style="font-size:12px">Tokens are stored in a file only you can read (600) and never come back to the browser. ••• means “unchanged”.</span><span style="flex:1"></span>
       <button type="button" id="setCancel">Cancel</button><button type="button" id="setSave" class="primary">Save</button></div>
   </form>
+</dialog>
+
+<dialog id="descDlg">
+  <h3 style="margin-top:0">New descriptions</h3>
+  <p class="muted" style="margin-top:0">These blocks already had a description. Tick the ones to replace; you can edit the text first.</p>
+  <div id="descList"></div>
+  <div class="row" style="margin-top:10px"><span style="flex:1"></span>
+    <button id="descClose">Keep the old ones</button><button id="descOk" class="primary">Replace ticked</button></div>
 </dialog>
 
 <dialog id="syncDlg">
@@ -733,6 +745,11 @@ const SETTINGS = [
     { path: 'activity.slack.enabled', label: 'Probe enabled', type: 'bool' },
     { path: 'activity.slack.token', label: 'User token', type: 'secret', placeholder: 'xoxp-…', hint: 'scope search:read; without a token the system probe still collects Slack time and huddles' },
   ]},
+  { title: 'Descriptions (AI)', fields: [
+    { path: 'describe.agent', label: 'Agent', type: 'select', options: ['claude', 'codex'], hint: 'the Claude Code or Codex CLI you are logged in to; it gets the evidence as text, no tools, no files' },
+    { path: 'describe.model', label: 'Model', type: 'text', placeholder: 'empty = the CLI default' },
+    { path: 'describe.style', label: 'Style', type: 'textarea', hint: 'how descriptions read; empty = the built-in style (verb phrases, “Continue task” rules)' },
+  ]},
   { title: 'Updates', fields: [
     { path: 'updates.check', label: 'Check for new versions', type: 'bool', hint: 'every 6 h; installs only after clicking “Update”' },
     { path: 'updates.prerelease', label: 'Pre-releases too', type: 'bool', def: false },
@@ -783,6 +800,8 @@ function settingsField(f) {
     case 'time': el = input('time', v || f.def); break;
     case 'secret': el = input('password', v, f.placeholder); el.autocomplete = 'off'; break;
     case 'lines': el = document.createElement('textarea'); el.value = (v || []).join('\n'); break;
+    case 'textarea': el = document.createElement('textarea'); el.value = v || ''; el.style.height = '110px'; break;
+    case 'select': el = document.createElement('select'); for (const o of f.options) el.add(new Option(o, o)); el.value = v || f.options[0]; break;
     case 'map': el = document.createElement('textarea'); el.value = Object.entries(v || {}).map(([k, x]) => `${k} = ${x}`).join('\n'); break;
     case 'strings': el = listBox(v, val => [input(f.secret ? 'password' : 'text', val, f.placeholder)], f.add); break;
     case 'objects': el = listBox(v, val => f.item.map(it => { const i = input(it.secret ? 'password' : 'text', val?.[it.key], it.placeholder); i.dataset.key = it.key; return i; }), f.add); break;
@@ -944,6 +963,7 @@ function renderForm() {
   } else editLogged = null;
   renderJiraLink(b);
   renderFormTime();
+  renderDescribing();
 }
 const tempoWeekHref = d => `${(cfg.jiraBase || '').replace(/\/$/, '')}/plugins/servlet/ac/io.tempo.jira/tempo-app#!/my-work/week?type=TIME&date=${d}`;
 function jiraHref(b) {
@@ -1141,6 +1161,67 @@ $('#logBtn').onclick = async () => {
 };
 $('#logClose').onclick = () => logDlg.close();
 
+// ---------- descriptions by an agent: empty ones are filled, others wait for a yes ----------
+const descDlg = $('#descDlg');
+let describing = false;
+const blockKey = b => `${b.start}-${b.end}-${b.ticket}`;
+async function describeBlocks(keys) {
+  if (describing) return;
+  await flush();
+  describing = true; renderDescribing();
+  toast(`Writing descriptions with ${(cfg.describeAgent || 'claude') === 'codex' ? 'Codex' : 'Claude'}…`);
+  try {
+    const res = await api('POST', `/api/days/${day}/describe`, { keys });
+    const fill = [], ask = [];
+    for (const p of res.proposals) {
+      const b = blocks.find(x => blockKey(x) === p.key && !x.logged);
+      if (!b) continue;   // changed while the agent was writing
+      (b.desc ? ask : fill).push([b, p]);
+    }
+    if (fill.length) {
+      snapshot();
+      for (const [b, p] of fill) b.desc = p.new;
+      formFor = undefined; changed(); render();
+    }
+    if (ask.length) openDescDialog(ask);
+    toast(`${fill.length} description(s) filled` + (ask.length ? `, ${ask.length} to review` : '') + (fill.length ? ' (⌘Z undoes)' : '') + '.');
+  } catch (e) { toast('Descriptions: ' + e.message, true); }
+  finally { describing = false; renderDescribing(); }
+}
+function renderDescribing() {
+  $('#descBtn').disabled = describing; $('#descBtn').textContent = describing ? '✨ Describing…' : '✨ Describe day';
+  const b = sel();
+  $('#fDescribe').hidden = !b || b.logged || !b.ticket;
+  $('#fDescribe').disabled = describing;
+}
+function openDescDialog(items) {
+  const list = $('#descList'); list.innerHTML = '';
+  for (const [b, p] of items) {
+    const div = document.createElement('div'); div.className = 'desc-item'; div.dataset.key = p.key;
+    div.innerHTML = '<label><input type="checkbox" checked> <b></b></label><div class="old"></div><textarea></textarea>';
+    div.querySelector('b').textContent = `${fmt(b.start)}–${fmt(b.end)} ${b.ticket}`;
+    div.querySelector('.old').textContent = b.desc;
+    div.querySelector('textarea').value = p.new;
+    list.appendChild(div);
+  }
+  descDlg.showModal();
+}
+$('#descBtn').onclick = () => describeBlocks([]);
+$('#fDescribe').onclick = () => { const b = sel(); if (b) describeBlocks([blockKey(b)]); };
+$('#descClose').onclick = () => descDlg.close();
+$('#descOk').onclick = () => {
+  const picked = [...descDlg.querySelectorAll('.desc-item')].filter(d => d.querySelector('input').checked);
+  if (picked.length) {
+    snapshot();
+    for (const d of picked) {
+      const b = blocks.find(x => blockKey(x) === d.dataset.key && !x.logged);
+      if (b) b.desc = d.querySelector('textarea').value.replace(/\s*\n\s*/g, ' ').trim();
+    }
+    formFor = undefined; changed(); render();
+  }
+  descDlg.close();
+};
+
 // ---------- sync from Tempo: Tempo's worklogs of the day into the file ----------
 const syncDlg = $('#syncDlg');
 let syncPlan = null;
@@ -1236,7 +1317,7 @@ $('#undo').onclick = undo;
 $('#redo').onclick = redo;
 
 document.addEventListener('keydown', e => {
-  const inField = /INPUT|TEXTAREA/.test(document.activeElement?.tagName) || importDlg.open || logDlg.open || syncDlg.open || $("#settingsDlg").open;
+  const inField = /INPUT|TEXTAREA/.test(document.activeElement?.tagName) || importDlg.open || logDlg.open || syncDlg.open || descDlg.open || $("#settingsDlg").open;
   if (e.key === 'Escape') {
     if (drag) endDrag(true);
     else if (!inField) { selId = null; render(); }
@@ -1273,6 +1354,7 @@ function render() {
   tw.hidden = !cfg.jiraBase;
   if (cfg.jiraBase) tw.href = tempoWeekHref(day);
   $('#syncBtn').hidden = !cfg.tempo;
+  renderDescribing();
   renderDays(); renderTimeline(); renderActivity(); renderSum(); renderForm(); renderOutput();
 }
 setInterval(renderTimeline, 60 * 1000);
