@@ -1488,7 +1488,8 @@ addEventListener('resize', () => { renderTimeline(); renderSum(); });
 })();
 // the tray menu opens the page with #settings
 function openFromHash() {
-  if (location.hash === '#settings' && cfg.settings) { history.replaceState(null, '', location.pathname); openSettings(); }
+  // window.history: the bare name "history" is the undo stack
+  if (location.hash === '#settings' && cfg.settings) { window.history.replaceState(null, '', location.pathname); openSettings(); }
 }
 addEventListener('hashchange', openFromHash);
 </script>

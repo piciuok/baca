@@ -35,6 +35,8 @@ The script downloads the latest release and checks it against `checksums.txt`. I
 probes use (`xdotool`, `xprintidle`, `wmctrl`, `notify-send`). Options: `BACA_VERSION=v0.1.0`, `BACA_YES=1`,
 `BACA_NO_DEPS=1`, `BACA_NO_START=1`.
 
+Requirements: macOS 13 or later, or Linux on X11 (on Wayland other apps cannot see the active window, so only the git, agent and remote probes work). On GNOME the tray icon needs the AppIndicator extension; without it baca runs and `baca open` opens the UI.
+
 By hand: download `baca_<version>_<os>_<arch>.tar.gz` from [Releases](https://github.com/piciuok/baca/releases),
 check it against `checksums.txt`, then run `./baca install && baca start`. From source (Go, and Xcode command
 line tools on macOS): `make install`.
@@ -89,7 +91,7 @@ write the descriptions of the day's open blocks, the way you would at the end of
 
 - baca gathers what happened during each block: your commits in the watched repos (around its time or naming its ticket), the prompts you gave Claude Code and Codex there, the window titles with minutes, GitLab, GitHub and Jira events and meetings. The last three days of your worklog are the style example, so the agent follows your phrasing and knows which tickets continue.
 - Empty descriptions are filled at once (⌘Z undoes). Blocks that already have one get a proposal you tick, edit or reject. Logged blocks are left alone; change those with “Edit in Tempo”.
-- The agent gets this as text only: `claude -p --tools "" --max-turns 1 --no-session-persistence` or `codex exec --sandbox read-only --ephemeral`, run in an empty temporary directory. It has no tools, reads no files and keeps no session. The evidence does go to Anthropic or OpenAI through your CLI. Agent sessions outside the watched repos are never included.
+- The agent gets this as text only, in an empty temporary directory, with no kept session. Claude Code runs with no tools at all (`claude -p --tools "" --max-turns 1 --no-session-persistence --strict-mcp-config`). Codex runs `codex exec --sandbox read-only --ephemeral --ignore-user-config`: its sandbox stops writes but not reads, so its proposals are always shown for review, never filled in at once. The evidence is marked as data the agent must not follow, and goes to Anthropic or OpenAI through your CLI. Agent sessions outside the watched repos are never included.
 - Settings → Descriptions (AI): the agent, the model and the style (by default: short verb phrases, “Continue task” for later blocks of a ticket, “Continue task, …” for a ticket from earlier days).
 
 ## Activity probes
@@ -142,8 +144,10 @@ it as is keeps the stored value.
 ## Security
 
 - The server listens on localhost and answers only to a loopback `Host` (no DNS rebinding).
-- Every request needs the token from `~/.local/state/baca/token` (mode 600): the page as `/?t=<token>`, API calls in the `X-Baca-Token` header. Other users and processes cannot read the worklog or the activity, and other web pages cannot call the API. The icon and `baca open` open the page with the token.
-- The page is never framed and sends no `Referer`. `config.json` and the activity files are mode 600.
+- The UI token in `~/.local/state/baca/token` (mode 600) never travels in a URL. The icon and `baca open` open `/?c=<code>`: a code made from the token, valid for two minutes and only once, which the server exchanges for an HttpOnly, SameSite=Strict cookie before redirecting to a clean `/`. API calls need that cookie plus the `X-Baca` header (no other web page can send it), or the token in `X-Baca-Token`. Before opening the browser, baca checks that the server on the port knows the token, so a program squatting the port never gets a code.
+- Stored tokens stay with their host: changing a service URL or account needs the token typed again. Service URLs must be https. The worklog must be a visible `.txt`/`.md` file.
+- `config.json`, the worklog, the activity files and the logs are readable by you only. `activity.retentionDays` deletes old activity (off by default).
+- The page is never framed and sends no `Referer`. Descriptions can never carry the `#~id~#` marker.
 - Report vulnerabilities privately, see [SECURITY.md](SECURITY.md).
 
 ## Updates and releases
