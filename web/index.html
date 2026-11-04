@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>baca</title>
+<style>
+:root{
+  --bg:#14161a; --panel:#1c1f25; --line:#2a2e36; --line2:#22262d; --text:#e6e8eb; --muted:#8b919c;
+  --red:#ff4d4f; --accent:#4c9ffe; --green:#6dd3a8; --yellow:#f6c344;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+body{padding:12px 16px 24px}
+button,input,textarea{font:inherit;color:inherit}
+button{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+button:hover{border-color:#3b414c}
+button:disabled{opacity:.45;cursor:default}
+button.danger{color:var(--red)}
+a.btn{display:inline-block;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 10px;color:var(--accent);text-decoration:none}
+a.btn:hover{border-color:#3b414c}
+.loglist a{color:var(--accent);text-decoration:none}
+button.primary{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:600}
+input,textarea{background:#0f1114;border:1px solid var(--line);border-radius:6px;padding:5px 8px;outline:none}
+input:focus,textarea:focus{border-color:var(--accent)}
+input:disabled,textarea:disabled{opacity:.6}
+input[type=date]{color-scheme:dark}
+.muted{color:var(--muted)}
+code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+
+header{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+header .grow{flex:1}
+.stat b{color:var(--text)}
+.over{color:var(--red)}
+.under{color:var(--yellow)}
+.ok{color:var(--green)}
+#saveState{font-size:12px;min-width:90px;text-align:right}
+
+/* ---------- days ---------- */
+.days{display:flex;gap:6px;margin-bottom:10px;overflow-x:auto;padding-bottom:2px}
+.chip{flex:none;display:flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--line);border-radius:999px;background:var(--panel);
+  cursor:pointer;font-size:12px;white-space:nowrap}
+.chip.cur{border-color:var(--accent)}
+.chip i{width:8px;height:8px;border-radius:50%;background:#555c68}
+.chip.logged i{background:var(--green)}
+.chip.partial i{background:var(--yellow)}
+.chip .m{color:var(--muted)}
+
+/* ---------- bar 1: day timeline ---------- */
+.track{position:relative;height:84px;background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:hidden;
+  touch-action:none;user-select:none;cursor:crosshair}
+.grid{position:absolute;inset:0;pointer-events:none}
+.grid i{position:absolute;top:0;bottom:0;width:1px;background:var(--line)}
+.grid i.half{background:var(--line2)}
+.block{position:absolute;top:6px;bottom:6px;border-radius:4px;cursor:grab;overflow:hidden;padding:4px 7px;
+  color:#0d0f12;font-weight:600;font-size:12px;white-space:nowrap;box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)}
+.block .t,.block .d{display:block;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.block .d{font-weight:400;opacity:.8}
+.block .h{position:absolute;top:0;bottom:0;width:6px;cursor:ew-resize;z-index:1}
+.block .h.l{left:0}.block .h.r{right:0}
+.block .h:hover{background:rgba(255,255,255,.4)}
+.block.sel{box-shadow:0 0 0 2px #fff, inset 0 0 0 1px rgba(0,0,0,.25);z-index:2}
+.block.locked{cursor:default;background-image:repeating-linear-gradient(135deg,rgba(0,0,0,.16) 0 6px,transparent 6px 12px) !important}
+.block.ghost{background:rgba(76,159,254,.3);border:1px dashed var(--accent);color:var(--text);pointer-events:none}
+.now{position:absolute;top:0;bottom:0;width:2px;background:var(--accent);pointer-events:none;z-index:3}
+.ruler{position:relative;height:18px;color:var(--muted);font-size:11px;margin-top:2px}
+.ruler span{position:absolute;transform:translateX(-50%);white-space:nowrap}
+.ruler span.red{color:var(--red);font-weight:600}
+body.dragging, body.dragging *{cursor:grabbing !important}
+body.resizing, body.resizing *{cursor:ew-resize !important}
+.tip{position:fixed;pointer-events:none;background:#000;color:#fff;padding:3px 7px;border-radius:4px;font-size:12px;display:none;z-index:20;white-space:nowrap}
+.tip.multi{white-space:pre-wrap;max-width:min(680px,92vw);padding:8px 10px;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+.tip.multi b{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;font-size:13px}
+
+/* ---------- bar 2: totals ---------- */
+.sumbar{position:relative;height:84px;background:var(--panel);border:1px solid var(--line);border-radius:6px;margin-top:10px;overflow:hidden}
+.seg{position:absolute;top:6px;bottom:6px;padding:4px 7px;font-size:12px;font-weight:600;color:#0d0f12;white-space:nowrap;overflow:hidden;
+  box-shadow:inset -1px 0 0 var(--panel);cursor:default}
+.seg .t,.seg .d{display:block;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.seg .d{font-weight:400;opacity:.8}
+.seg.vert{padding:4px 0;display:flex;align-items:center;justify-content:center}
+.seg.vert .t{writing-mode:vertical-rl;transform:rotate(180deg);max-height:100%}
+.seg.vert .d{display:none}
+.seg:hover{filter:brightness(1.12)}
+.seg:first-of-type{border-radius:4px 0 0 4px}
+.eight{position:absolute;top:0;bottom:0;width:2px;background:var(--red);z-index:2}
+
+/* ---------- bottom ---------- */
+.bottom{display:grid;grid-template-columns:minmax(260px,1fr) 2fr;gap:14px;margin-top:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}
+.card h3{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:center;gap:8px}
+.card h3 .grow{flex:1}
+.field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.field input,.field textarea{width:100%}
+.row{display:flex;align-items:center;gap:8px}
+.note{font-size:12px;padding:6px 8px;border-radius:6px;background:rgba(109,211,168,.1);color:var(--green);margin-bottom:10px}
+pre#out{margin:0;white-space:pre-wrap;word-break:break-word;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;min-height:60px}
+#summary{margin-top:8px;font-size:12px}
+footer{margin-top:12px;font-size:12px}
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;width:min(820px,92vw)}
+dialog::backdrop{background:rgba(0,0,0,.5)}
+dialog textarea{width:100%;height:280px;font:12px/1.5 ui-monospace,Menlo,monospace}
+.loglist{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:50vh;overflow:auto;margin:0 0 10px;padding:0;list-style:none}
+.loglist li{display:flex;gap:8px;white-space:nowrap}
+.loglist li span:last-child{overflow:hidden;text-overflow:ellipsis}
+.loglist .bad{color:var(--yellow)}
+.loglist .err{color:var(--red)}
+.loglist .good{color:var(--green)}
+kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:11px}
+.toast{position:fixed;right:16px;bottom:16px;max-width:460px;background:#000;border:1px solid var(--line);border-radius:8px;padding:8px 12px;
+  z-index:30;display:none;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+.toast.err{border-color:var(--red)}
+</style>
+</head>
+<body>
+
+<header>
+  <button id="prev" title="Previous day">‹</button>
+  <input type="date" id="date">
+  <button id="next" title="Next day">›</button>
+  <button id="today">Today</button>
+  <a id="tempoWeek" class="btn" target="_blank" rel="noopener" hidden title="This day's week in the Tempo calendar">Tempo ↗</a>
+  <span class="grow"></span>
+  <span class="stat" id="stat"></span>
+  <span class="grow"></span>
+  <span id="saveState" class="muted"></span>
+  <button id="undo" title="Undo (⌘Z)">↶</button>
+  <button id="redo" title="Redo (⇧⌘Z)">↷</button>
+  <button id="importBtn">Import worklog</button>
+  <button id="logBtn" class="primary">Log to Tempo</button>
+</header>
+
+<div class="days" id="days"></div>
+
+<div class="track" id="track"><div class="grid" id="grid"></div></div>
+<div class="ruler" id="ruler"></div>
+
+<div class="sumbar" id="sumbar"></div>
+<div class="ruler" id="sumruler"></div>
+
+<div class="bottom">
+  <section class="card">
+    <h3>Block</h3>
+    <div id="noSel" class="muted">
+      Click a block to edit it.<br>
+      Drag over an empty spot to add a block (a plain click adds 30 min).<br><br>
+      A block's edge changes its length: if the neighbour touches it, you move the shared boundary; if there is a gap, you fill the gap first.
+      The middle of a block moves the whole block and stops at the neighbour. Logged blocks (striped) are locked.<br><br>
+      <kbd>Del</kbd> deletes · <kbd>⌘Z</kbd> undoes · <kbd>←</kbd><kbd>→</kbd> move by 5 min · <kbd>Esc</kbd> cancels
+    </div>
+    <div id="form" hidden>
+      <div id="fLocked" class="note" hidden></div>
+      <div class="field"><label for="fTicket">Ticket</label><input id="fTicket" list="tickets" placeholder="ABC-123" autocomplete="off"></div>
+      <div class="field"><label for="fDesc">Description <span class="muted">(empty = “Continue task”)</span></label>
+        <textarea id="fDesc" rows="4" placeholder="Prepare ..., fix ..., verify ..."></textarea></div>
+      <div class="row"><span id="fTime" class="muted"></span><span style="flex:1"></span><a id="fJira" class="btn" target="_blank" rel="noopener" hidden></a><button id="fDel" class="danger">Delete block</button></div>
+    </div>
+    <datalist id="tickets"></datalist>
+  </section>
+
+  <section class="card">
+    <h3>Worklog <span class="grow"></span><button id="copy">Copy</button></h3>
+    <pre id="out"></pre>
+    <div id="summary" class="muted"></div>
+  </section>
+</div>
+
+<footer class="muted" id="footer"></footer>
+
+<div class="tip" id="tip"></div>
+<div class="toast" id="toast"></div>
+
+<dialog id="importDlg">
+  <h3 style="margin-top:0">Import worklog</h3>
+  <p class="muted" style="margin-top:0">Paste the output of <code>/worklog</code> or a part of the file. A header like <code>@Wtorek 27.10</code> sets the day; without one the blocks go to the current day. Open blocks of that day are replaced, logged ones stay (⌘Z undoes).</p>
+  <textarea id="importTxt" placeholder="@Wtorek 27.10&#10;[06:30 - 08:40] - ABC-581 - Continue task, ..."></textarea>
+  <div class="row" style="margin-top:10px"><span id="importInfo" class="muted"></span><span style="flex:1"></span>
+    <button id="importCancel">Cancel</button><button id="importOk" class="primary">Load</button></div>
+</dialog>
+
+<dialog id="logDlg">
+  <h3 style="margin-top:0" id="logTitle">Logging to Tempo</h3>
+  <ul class="loglist" id="logList"></ul>
+  <div class="row"><span id="logInfo" class="muted"></span><span style="flex:1"></span>
+    <button id="logClose">Close</button><button id="logOk" class="primary">Send</button></div>
+</dialog>
+
+<script>
+// ---------- configuration (to move into the settings later) ----------
+const AXIS_START = 6 * 60, AXIS_END = 18 * 60;   // day timeline 06:00–18:00
+const SNAP = 5, MIN_LEN = 5;                      // step and minimum block length [min]
+const TARGET = 8 * 60;                            // daily target
+const SUM_SCALE = TARGET / 0.8;                   // 8h = 80% of the sum bar width
+const SAVE_DELAY = 400;                           // ms without changes before writing the file
+const PALETTE = ['#5aa9ff','#f6c344','#6dd3a8','#ff8a65','#b79cff','#4dd0e1','#f48fb1','#aed581','#ffb74d','#90a4ae','#e57373','#81c784','#ce93d8','#80cbc4'];
+const DAYS = ['Niedziela','Poniedziałek','Wtorek','Środa','Czwartek','Piątek','Sobota'];
+const DAYS_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const TICKET_RE = /^[A-Z][A-Z0-9]*-\d+$/;
+const WRAP_MIN = 60;                              // a shorter entry line cannot have wrapped (like WrapMin in Go)
+
+// ---------- helpers ----------
+const $ = s => document.querySelector(s);
+const pad = n => String(n).padStart(2, '0');
+const fmt = m => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+const dur = m => `${Math.floor(m / 60)}h ${pad(m % 60)}m`;
+const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const snap = m => Math.round(m / SNAP) * SNAP;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const clone = o => JSON.parse(JSON.stringify(o));
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const uid = () => Math.random().toString(36).slice(2, 10);
+const pct = m => (m - AXIS_START) / (AXIS_END - AXIS_START) * 100;
+function colorOf(t) {
+  if (!t) return '#6b7280';
+  let h = 0; for (const c of t) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
+let toastTimer;
+function toast(msg, err) {
+  const t = $('#toast');
+  t.textContent = msg; t.className = 'toast' + (err ? ' err' : ''); t.style.display = 'block';
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = 'none', err ? 7000 : 3000);
+}
+
+// ---------- API ----------
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (method !== 'GET') { opts.headers = { 'Content-Type': 'application/json', 'X-Baca': '1' }; opts.body = JSON.stringify(body ?? {}); }
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({ error: res.statusText }));
+  if (!res.ok) { const e = new Error(data.error || res.statusText); e.status = res.status; e.data = data; throw e; }
+  return data;
+}
+const toEntry = b => ({ start: b.start, end: b.end, ticket: b.ticket, desc: b.desc, logged: !!b.logged, worklogId: b.worklogId || '' });
+
+// ---------- stan ----------
+let cfg = {};
+let day = iso(new Date());
+let blocks = [], hash = '', dayHeader = '', dayExtra = [];
+let daysList = [];
+let selId = null, formFor = undefined;
+let history = [], future = [];
+let drag = null, ghost = null;
+let dirty = false, saving = null, saveTimer = null, loadSeq = 0;
+
+const sel = () => blocks.find(b => b.id === selId);
+function fromView(v) {
+  blocks = v.entries.map(e => ({ ...e, id: uid() }));
+  hash = v.hash; dayHeader = v.header; dayExtra = v.extra || [];
+  if (!sel()) selId = null;
+  formFor = undefined;
+}
+
+async function loadDay(d) {
+  const seq = ++loadSeq;
+  try {
+    const v = await api('GET', `/api/days/${d}`);
+    if (seq !== loadSeq) return;
+    day = d; fromView(v); history = []; future = []; selId = null;
+    render();
+  } catch (e) { toast('Cannot load the day: ' + e.message, true); }
+}
+async function setDay(d) {
+  await flush();
+  day = d; blocks = []; hash = ''; selId = null; render();
+  await loadDay(d);
+}
+
+// Changes are written to the file after a short pause; saves go one after another,
+// each with the day hash returned by the previous one.
+function changed() { dirty = true; setSaveState('…'); clearTimeout(saveTimer); saveTimer = setTimeout(flush, SAVE_DELAY); }
+async function flush() {
+  clearTimeout(saveTimer); saveTimer = null;
+  while (saving) await saving;
+  if (!dirty) return;
+  dirty = false;
+  const d = day;
+  setSaveState('saving…');
+  saving = api('PUT', `/api/days/${d}`, { base: hash, entries: blocks.map(toEntry) })
+    .then(v => { if (d === day) { hash = v.hash; dayHeader = v.header; } setSaveState('saved'); refreshDays(); renderOutput(); })
+    .catch(e => {
+      setSaveState('save failed', true);
+      if (e.data?.day && d === day) { fromView(e.data.day); history = []; future = []; render(); }
+      toast(e.status === 409 ? 'The day changed in the file – loaded the current version.' : 'Not saved: ' + e.message, true);
+    })
+    .finally(() => { saving = null; });
+  await saving;
+}
+function setSaveState(t, err) { const s = $('#saveState'); s.textContent = t; s.className = err ? 'over' : 'muted'; }
+
+function snapshot() { history.push(clone(blocks)); if (history.length > 300) history.shift(); future = []; }
+function undo() { if (!history.length) return; future.push(clone(blocks)); blocks = history.pop(); afterHistory(); }
+function redo() { if (!future.length) return; history.push(clone(blocks)); blocks = future.pop(); afterHistory(); }
+function afterHistory() { if (!sel()) selId = null; formFor = undefined; changed(); render(); }
+
+// ---------- days ----------
+async function refreshDays() {
+  try {
+    daysList = await api('GET', '/api/days');
+    renderDays();
+    const t = await api('GET', '/api/tickets');
+    $('#tickets').innerHTML = t.map(x => `<option value="${x}">`).join('');
+  } catch { /* server unavailable – the save shows it */ }
+}
+function renderDays() {
+  const box = $('#days');
+  const list = daysList.slice(0, 20);
+  if (!list.some(x => x.date === day)) list.push({ date: day, minutes: 0, entries: 0, logged: 0, status: 'open' });
+  list.sort((a, b) => a.date < b.date ? 1 : -1);
+  box.innerHTML = '';
+  for (const x of list) {
+    const dt = new Date(x.date + 'T12:00');
+    const c = document.createElement('div');
+    c.className = `chip ${x.status}` + (x.date === day ? ' cur' : '');
+    c.title = x.status === 'logged' ? 'logged' : x.status === 'partial' ? `logged ${x.logged}/${x.entries}` : 'not logged';
+    c.innerHTML = `<i></i>${DAYS_SHORT[dt.getDay()]} ${pad(dt.getDate())}.${pad(dt.getMonth() + 1)} <span class="m">${x.entries ? dur(x.minutes) : '—'}</span>`;
+    c.onclick = () => x.date !== day && setDay(x.date);
+    box.appendChild(c);
+  }
+}
+
+// ---------- pasek 1 ----------
+const track = $('#track');
+function minAt(clientX) {
+  const r = track.getBoundingClientRect();
+  return AXIS_START + (clientX - r.left) / r.width * (AXIS_END - AXIS_START);
+}
+
+(function buildAxis() {
+  const grid = $('#grid'), ruler = $('#ruler');
+  for (let m = AXIS_START + 30; m < AXIS_END; m += 30) {
+    const i = document.createElement('i');
+    if (m % 60) i.className = 'half';
+    i.style.left = pct(m) + '%';
+    grid.appendChild(i);
+  }
+  for (let m = AXIS_START; m <= AXIS_END; m += 60) {
+    const s = document.createElement('span');
+    s.textContent = fmt(m);
+    s.style.left = pct(m) + '%';
+    if (m === AXIS_START) s.style.transform = 'none';
+    if (m === AXIS_END) s.style.transform = 'translateX(-100%)';
+    ruler.appendChild(s);
+  }
+})();
+
+function renderTimeline() {
+  track.querySelectorAll('.block,.now').forEach(e => e.remove());
+  const list = ghost ? [...blocks, { ...ghost, id: '__ghost', ghost: true }] : blocks;
+  for (const b of list) {
+    const el = document.createElement('div');
+    el.className = 'block' + (b.ghost ? ' ghost' : '') + (b.logged ? ' locked' : '') + (b.id === selId ? ' sel' : '');
+    el.dataset.id = b.id;
+    el.style.left = pct(b.start) + '%';
+    el.style.width = (pct(b.end) - pct(b.start)) + '%';
+    if (!b.ghost) el.style.background = colorOf(b.ticket);
+    el.innerHTML = '<span class="t"></span><span class="d"></span>' +
+      (b.ghost || b.logged ? '' : '<span class="h l" data-edge="l"></span><span class="h r" data-edge="r"></span>');
+    el.querySelector('.t').textContent = b.ghost ? `${fmt(b.start)}–${fmt(b.end)}` : (b.logged ? '✓ ' : '') + (b.ticket || '—');
+    el.querySelector('.d').textContent = b.ghost ? '' : (b.desc || '');
+    track.appendChild(el);
+  }
+  const now = new Date();
+  if (day === iso(now)) {
+    const m = now.getHours() * 60 + now.getMinutes();
+    if (m > AXIS_START && m < AXIS_END) {
+      const n = document.createElement('div');
+      n.className = 'now'; n.style.left = pct(m) + '%';
+      track.appendChild(n);
+    }
+  }
+}
+
+// The layout is recomputed from the snapshot taken before the drag – always from the original, so
+// moving the cursor back restores the neighbour (the gap comes back while the blocks did not touch).
+// A logged neighbour is a wall: it neither shrinks nor grows.
+function applyDrag(d, m) {
+  const arr = clone(d.orig);
+  const i = arr.findIndex(b => b.id === d.id);
+  const b = arr[i], p = arr[i - 1], n = arr[i + 1];
+  const o = d.orig[i], op = d.orig[i - 1], on = d.orig[i + 1];
+
+  if (d.mode === 'move') {
+    const len = o.end - o.start;
+    const lo = op ? op.end : AXIS_START;
+    const hi = (on ? on.start : AXIS_END) - len;
+    b.start = clamp(o.start + snap(m - d.m0), lo, Math.max(lo, hi));
+    b.end = b.start + len;
+  } else if (d.mode === 'left') {
+    const lo = !op ? AXIS_START : op.logged ? op.end : op.start + MIN_LEN;
+    const s = clamp(snap(m), lo, o.end - MIN_LEN);
+    b.start = s;
+    if (p && !op.logged && (s < op.end || op.end === o.start)) p.end = s;   // ran into the neighbour or they touched
+  } else {
+    const hi = !on ? AXIS_END : on.logged ? on.start : on.end - MIN_LEN;
+    const e = clamp(snap(m), o.start + MIN_LEN, hi);
+    b.end = e;
+    if (n && !on.logged && (e > on.start || on.start === o.end)) n.start = e;
+  }
+  return arr;
+}
+
+function gapAt(m) {
+  let lo = AXIS_START, hi = AXIS_END;
+  for (const b of blocks) {
+    if (b.end <= m) lo = Math.max(lo, b.end);
+    if (b.start >= m) hi = Math.min(hi, b.start);
+  }
+  return [lo, hi];
+}
+
+track.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  document.activeElement?.blur?.();
+  const m = minAt(e.clientX);
+  const bel = e.target.closest('.block');
+  const hit = bel ? blocks.find(b => b.id === bel.dataset.id) : blocks.find(b => m >= b.start && m < b.end);
+  if (hit) {
+    selId = hit.id;
+    if (!hit.logged) {
+      const edge = e.target.dataset.edge;
+      drag = { mode: edge === 'l' ? 'left' : edge === 'r' ? 'right' : 'move', id: hit.id, x0: e.clientX, m0: m, orig: clone(blocks), moved: false };
+      document.body.classList.add(drag.mode === 'move' ? 'dragging' : 'resizing');
+    }
+  } else {
+    const [lo, hi] = gapAt(m);
+    if (hi - lo < MIN_LEN) return;
+    drag = { mode: 'create', x0: e.clientX, anchor: clamp(snap(m), lo, hi), lo, hi, moved: false };
+  }
+  if (drag) track.setPointerCapture(e.pointerId);
+  render();
+  showTip(e);
+});
+
+track.addEventListener('pointermove', e => {
+  if (drag && (drag.moved || Math.abs(e.clientX - drag.x0) >= 3)) {
+    drag.moved = true;
+    const m = minAt(e.clientX);
+    if (drag.mode === 'create') {
+      const c = clamp(snap(m), drag.lo, drag.hi);
+      ghost = { start: Math.min(drag.anchor, c), end: Math.max(drag.anchor, c) };
+      renderTimeline();
+    } else {
+      blocks = applyDrag(drag, m);
+      renderTimeline(); renderSum(); renderOutput(); renderFormTime();
+    }
+  }
+  showTip(e);
+});
+
+function endDrag(cancel) {
+  if (!drag) return;
+  const d = drag; drag = null;
+  document.body.classList.remove('dragging', 'resizing');
+  if (d.mode === 'create') {
+    const g = ghost; ghost = null;
+    if (cancel) return render();
+    let s, en;
+    if (g && g.end - g.start >= MIN_LEN) { s = g.start; en = g.end; }
+    else {                                   // plain click: 30 min from the cursor, within the gap
+      s = d.anchor; en = Math.min(s + 30, d.hi);
+      if (en - s < MIN_LEN) { en = d.hi; s = Math.max(d.lo, en - 30); }
+    }
+    if (en - s < MIN_LEN) return render();
+    snapshot();
+    const nb = { id: uid(), start: s, end: en, ticket: '', desc: '', logged: false };
+    blocks.push(nb); blocks.sort((a, b) => a.start - b.start);
+    selId = nb.id; changed(); render();
+    $('#fTicket').focus();
+    return;
+  }
+  if (cancel) blocks = d.orig;
+  else if (!same(d.orig, blocks)) { history.push(d.orig); future = []; changed(); }
+  render();
+}
+track.addEventListener('pointerup', () => endDrag(false));
+track.addEventListener('pointercancel', () => endDrag(true));
+track.addEventListener('pointerleave', () => { if (!drag) $('#tip').style.display = 'none'; });
+
+function showTip(e) {
+  const tip = $('#tip');
+  let txt;
+  if (drag && drag.mode === 'create') txt = ghost ? `${fmt(ghost.start)} – ${fmt(ghost.end)} (${dur(ghost.end - ghost.start)})` : fmt(drag.anchor);
+  else {
+    const b = drag ? blocks.find(x => x.id === drag.id) : (() => {
+      const el = e.target.closest?.('.block'); return el && blocks.find(x => x.id === el.dataset.id);
+    })();
+    if (b) txt = `${b.logged ? '✓ ' : ''}${b.ticket || '—'}  ${fmt(b.start)} – ${fmt(b.end)} (${dur(b.end - b.start)})` + (b.logged ? `  · Tempo #${b.worklogId || '?'}` : '');
+    else txt = fmt(clamp(snap(minAt(e.clientX)), AXIS_START, AXIS_END));
+  }
+  tip.className = 'tip';
+  tip.textContent = txt;
+  placeTip(e.clientX, track.getBoundingClientRect().top - 26);
+}
+function placeTip(x, y) {
+  const tip = $('#tip');
+  tip.style.display = 'block';
+  tip.style.left = Math.max(8, Math.min(x + 12, innerWidth - tip.offsetWidth - 8)) + 'px';
+  tip.style.top = y + 'px';
+}
+
+// bar 2 tooltip: ticket, total and its worklog blocks
+const sumbar = $('#sumbar');
+sumbar.addEventListener('pointermove', e => {
+  const seg = e.target.closest('.seg');
+  const tip = $('#tip');
+  if (!seg) { tip.style.display = 'none'; return; }
+  const k = seg.dataset.key;
+  const mine = blocks.filter(b => (b.ticket || '—') === k);
+  const total = mine.reduce((s, b) => s + b.end - b.start, 0);
+  tip.className = 'tip multi';
+  tip.innerHTML = '';
+  const h = document.createElement('b');
+  h.textContent = `${k} · ${dur(total)} · ${mine.length} ${mine.length === 1 ? 'block' : 'blocks'}`;
+  tip.append(h, '\n' + mine.map(entryLine).join('\n'));
+  placeTip(e.clientX, $('#sumruler').getBoundingClientRect().bottom + 6);
+});
+sumbar.addEventListener('pointerleave', () => { $('#tip').style.display = 'none'; });
+
+// ---------- bar 2: totals, ascending ----------
+function aggregate() {
+  const agg = {};
+  for (const b of blocks) { const k = b.ticket || '—'; agg[k] = (agg[k] || 0) + b.end - b.start; }
+  return Object.entries(agg).sort((a, b) => a[1] - b[1]);
+}
+function renderSum() {
+  const bar = $('#sumbar'), ruler = $('#sumruler');
+  bar.innerHTML = ''; ruler.innerHTML = '';
+  const items = aggregate();
+  const total = items.reduce((s, [, v]) => s + v, 0);
+  const scale = Math.max(SUM_SCALE, total);
+  let left = 0;
+  for (const [k, v] of items) {
+    const s = document.createElement('div');
+    s.className = 'seg';
+    s.style.left = (left / scale * 100) + '%';
+    s.style.width = (v / scale * 100) + '%';
+    s.style.background = colorOf(k === '—' ? '' : k);
+    s.dataset.key = k;
+    s.innerHTML = '<span class="t"></span><span class="d"></span>';
+    s.querySelector('.t').textContent = k;
+    s.querySelector('.d').textContent = dur(v);
+    bar.appendChild(s);
+    const t = s.querySelector('.t'), d = s.querySelector('.d');
+    if (t.scrollWidth > t.clientWidth || d.scrollWidth > d.clientWidth) s.classList.add('vert');
+    left += v;
+  }
+  const red = document.createElement('div');
+  red.className = 'eight'; red.style.left = `calc(${TARGET / scale * 100}% - 1px)`;
+  bar.appendChild(red);
+  for (let h = 0; h * 60 <= scale; h++) {
+    const s = document.createElement('span');
+    s.textContent = h + 'h';
+    s.style.left = (h * 60 / scale * 100) + '%';
+    if (h === 0) s.style.transform = 'none';
+    if (h * 60 === TARGET) s.className = 'red';
+    ruler.appendChild(s);
+  }
+  const diff = total - TARGET;
+  const cls = diff > 0 ? 'over' : diff < 0 ? 'under' : 'ok';
+  const diffTxt = diff > 0 ? `overtime +${dur(diff)}` : diff < 0 ? `missing ${dur(-diff)}` : 'exactly 8h';
+  const logged = blocks.filter(b => b.logged).length;
+  const logTxt = !blocks.length ? '' : logged === blocks.length ? ' · <span class="ok">✓ logged</span>'
+    : logged ? ` · <span class="under">logged ${logged}/${blocks.length}</span>` : '';
+  $('#stat').innerHTML = `Total <b>${dur(total)}</b> / 8h 00m · <span class="${cls}">${diffTxt}</span>${logTxt}`;
+  const open = blocks.filter(b => !b.logged).length;
+  $('#logBtn').disabled = !open;
+  $('#logBtn').textContent = open ? `Log to Tempo (${open})` : 'Log to Tempo';
+}
+
+// ---------- block editing ----------
+const fTicket = $('#fTicket'), fDesc = $('#fDesc');
+let editSnap = null;
+function renderForm() {
+  const b = sel();
+  $('#noSel').hidden = !!b; $('#form').hidden = !b;
+  if (b && formFor !== b.id) { fTicket.value = b.ticket; fDesc.value = b.desc; }
+  formFor = b ? b.id : null;
+  if (b) {
+    fTicket.disabled = fDesc.disabled = !!b.logged;
+    $('#fDel').hidden = !!b.logged;
+    $('#fLocked').hidden = !b.logged;
+    $('#fLocked').textContent = b.logged ? `Logged in Tempo (#${b.worklogId || '?'}). Editing is locked.` : '';
+  }
+  renderJiraLink(b);
+  renderFormTime();
+}
+const tempoWeekHref = d => `${(cfg.jiraBase || '').replace(/\/$/, '')}/plugins/servlet/ac/io.tempo.jira/tempo-app#!/my-work/week?type=TIME&date=${d}`;
+function jiraHref(b) {
+  if (!b || !cfg.jiraBase || !TICKET_RE.test(b.ticket)) return '';
+  if (b.logged && b.worklogId) return tempoWeekHref(day) + `&focusedWorklogId=${encodeURIComponent(b.worklogId)}`;
+  return `${cfg.jiraBase.replace(/\/$/, '')}/browse/${encodeURIComponent(b.ticket)}`;
+}
+function renderJiraLink(b) {
+  const a = $('#fJira'), href = jiraHref(b);
+  a.hidden = !href;
+  if (href) { a.href = href; a.textContent = b.logged && b.worklogId ? 'Worklog in Tempo ↗' : 'Ticket in Jira ↗'; }
+}
+function renderFormTime() {
+  const b = sel();
+  if (b) $('#fTime').textContent = `${fmt(b.start)} – ${fmt(b.end)} · ${dur(b.end - b.start)}`;
+}
+for (const el of [fTicket, fDesc]) {
+  el.addEventListener('focus', () => { editSnap = clone(blocks); });
+  el.addEventListener('blur', () => {
+    if (editSnap && !same(editSnap, blocks)) { history.push(editSnap); future = []; }
+    editSnap = null;
+  });
+}
+fTicket.addEventListener('input', () => {
+  const b = sel(); if (!b || b.logged) return;
+  b.ticket = fTicket.value.trim().toUpperCase();
+  changed(); renderTimeline(); renderSum(); renderOutput(); renderJiraLink(b);
+});
+fDesc.addEventListener('input', () => {
+  const b = sel(); if (!b || b.logged) return;
+  b.desc = fDesc.value.replace(/\s*\n\s*/g, ' ');
+  changed(); renderTimeline(); renderOutput();
+});
+fTicket.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fDesc.focus(); } });
+fDesc.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fDesc.blur(); } });
+function deleteSelected() {
+  const b = sel(); if (!b) return;
+  if (b.logged) return toast('A logged block is not deleted – delete the worklog in Tempo and the marker in the file first.', true);
+  snapshot();
+  blocks = blocks.filter(x => x.id !== selId);
+  selId = null; changed(); render();
+}
+$('#fDel').onclick = deleteSelected;
+
+// ---------- worklog (the same format as the file) ----------
+function header(d) {
+  const dt = new Date(d + 'T12:00');
+  return `@${DAYS[dt.getDay()]} ${pad(dt.getDate())}.${pad(dt.getMonth() + 1)}`;
+}
+function entryLine(b) {
+  const desc = (b.desc || '').trim().replace(/\s+/g, ' ') || 'Continue task';
+  let s = `[${fmt(b.start)} - ${fmt(b.end)}] - ${b.ticket || '???'} - ${desc}`;
+  if (b.logged) s = '*' + s + (b.worklogId ? ` #~${b.worklogId}~#` : '');
+  return s;
+}
+function worklogText() {
+  return [dayHeader || header(day), ...dayExtra, ...blocks.map(entryLine)].join('\n');
+}
+function renderOutput() {
+  $('#out').textContent = blocks.length ? worklogText() : (dayHeader || header(day)) + '\n(no blocks)';
+  const items = aggregate().reverse();
+  const total = items.reduce((s, [, v]) => s + v, 0);
+  const missing = blocks.filter(b => !TICKET_RE.test(b.ticket)).length;
+  $('#summary').textContent = blocks.length
+    ? `Total ${dur(total)} (${fmt(blocks[0].start)}–${fmt(blocks[blocks.length - 1].end)}): ` +
+      items.map(([k, v]) => `${k} ${dur(v)}`).join(', ') + (missing ? ` · ${missing} block(s) without a valid ticket` : '')
+    : '';
+}
+$('#copy').onclick = async () => {
+  await navigator.clipboard.writeText(worklogText());
+  $('#copy').textContent = 'Copied';
+  setTimeout(() => $('#copy').textContent = 'Copy', 1200);
+};
+
+// ---------- import ----------
+// A line wrapped when copying from a terminal (no [, *, @, #) is joined to the entry above it.
+function joinWrapped(txt) {
+  const out = [];
+  let prevEntry = false;
+  for (const raw of txt.split('\n')) {
+    const t = raw.trim();
+    const cont = prevEntry && t && !/^([\[*@#]|Razem |Pominięte|Worklog za|Inny dzień)/.test(t);
+    if (cont) { out[out.length - 1] += ' ' + t; continue; }   // still an entry, so it may continue again
+    out.push(raw);
+    prevEntry = /^\s*\*?\s*\[\d{1,2}:\d{2}/.test(raw) && raw.length >= WRAP_MIN;
+  }
+  return out;
+}
+function parseWorklog(txt, baseDay) {
+  let date = null, clipped = 0, skipped = 0;
+  const out = [];
+  for (const raw of joinWrapped(txt)) {
+    const h = raw.match(/^\s*@\S+\s+(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?/);
+    if (h) {
+      const y = h[3] ? (h[3].length === 2 ? '20' + h[3] : h[3]) : baseDay.slice(0, 4);
+      date = `${y}-${pad(+h[2])}-${pad(+h[1])}`; continue;
+    }
+    const line = raw.replace(/\s*#~[^~#\s]*~#\s*$/, '');
+    const m = line.match(/^\s*\*?\s*\[(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\]\s*-\s*(\S+)\s*-\s*(.*)$/);
+    if (!m) { if (raw.trim()) skipped++; continue; }
+    let s = snap(+m[1] * 60 + +m[2]), e = snap(+m[3] * 60 + +m[4]);
+    if (s < AXIS_START || e > AXIS_END) clipped++;
+    s = clamp(s, AXIS_START, AXIS_END); e = clamp(e, AXIS_START, AXIS_END);
+    let desc = m[6].trim(); if (desc === 'Continue task') desc = '';
+    const ticket = m[5].toUpperCase() === '???' ? '' : m[5].toUpperCase();
+    out.push({ id: uid(), start: s, end: e, ticket, desc, logged: false });
+  }
+  out.sort((a, b) => a.start - b.start);
+  const res = [];
+  for (const b of out) {
+    if (res.length) b.start = Math.max(b.start, res[res.length - 1].end);
+    if (b.end - b.start >= MIN_LEN) res.push(b);
+  }
+  return { date, blocks: res, clipped, skipped };
+}
+const importDlg = $('#importDlg');
+$('#importBtn').onclick = () => { $('#importInfo').textContent = ''; importDlg.showModal(); $('#importTxt').focus(); };
+$('#importCancel').onclick = () => importDlg.close();
+$('#importTxt').addEventListener('input', () => {
+  const r = parseWorklog($('#importTxt').value, day);
+  $('#importInfo').textContent = `${r.blocks.length} blocks → ${r.date || day}` + (r.clipped ? ` · ${r.clipped} clipped to 06–18` : '') +
+    (r.skipped ? ` · ${r.skipped} lines skipped (not entries)` : '');
+});
+$('#importOk').onclick = async () => {
+  const r = parseWorklog($('#importTxt').value, day);
+  if (!r.blocks.length) { $('#importInfo').textContent = 'No [HH:MM - HH:MM] - TICKET - description lines found'; return; }
+  importDlg.close();
+  if (r.date && r.date !== day) await setDay(r.date);
+  const locked = blocks.filter(b => b.logged);
+  const free = r.blocks.filter(b => !locked.some(l => b.start < l.end && b.end > l.start));
+  snapshot();
+  blocks = [...locked, ...free].sort((a, b) => a.start - b.start);
+  selId = null; changed(); render();
+  if (free.length < r.blocks.length) toast(`Skipped ${r.blocks.length - free.length} block(s) overlapping logged ones.`);
+  $('#importTxt').value = '';
+};
+
+// ---------- logging to Tempo ----------
+const logDlg = $('#logDlg');
+let logPending = [];
+function logRow(icon, cls, b, extra) {
+  const li = document.createElement('li');
+  li.innerHTML = `<span class="${cls}">${icon}</span><span></span><span class="${cls}"></span><span class="muted"></span>`;
+  li.children[1].textContent = `${fmt(b.start)}–${fmt(b.end)} ${(b.ticket || '???').padEnd(8)} ${dur(b.end - b.start)}`;
+  li.children[2].textContent = extra || '';
+  li.children[3].textContent = extra ? '' : (b.desc || 'Continue task');
+  return li;
+}
+$('#logBtn').onclick = async () => {
+  await flush();
+  if (dirty || saving) return;
+  logPending = blocks.filter(b => !b.logged);
+  const list = $('#logList'); list.innerHTML = '';
+  let ok = 0, minutes = 0;
+  for (const b of logPending) {
+    const valid = TICKET_RE.test(b.ticket);
+    if (valid) { ok++; minutes += b.end - b.start; }
+    list.appendChild(valid ? logRow('•', 'muted', b) : logRow('!', 'bad', b, 'skipped: no valid ticket'));
+  }
+  $('#logTitle').textContent = `Logging to Tempo: ${header(day).slice(1)}`;
+  $('#logInfo').textContent = cfg.tempo ? `${ok} entries, ${dur(minutes)}. Once sent, each entry gets * and #~id~# in the file.`
+    : 'Tempo unavailable: ' + (cfg.tempoError || 'not configured');
+  $('#logOk').hidden = false;
+  $('#logOk').disabled = !cfg.tempo || !ok;
+  $('#logOk').textContent = `Send ${ok} ${ok === 1 ? 'entry' : 'entries'}`;
+  logDlg.showModal();
+};
+$('#logClose').onclick = () => logDlg.close();
+$('#logOk').onclick = async () => {
+  const btn = $('#logOk');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const res = await api('POST', `/api/days/${day}/log`, { hash });
+    const list = $('#logList'); list.innerHTML = '';
+    const icons = { logged: ['✓', 'good', 'logged'], existing: ['✓', 'good', 'already in Tempo – marked'], skipped: ['!', 'bad', ''], error: ['✗', 'err', ''] };
+    let good = 0;
+    for (const r of res.results) {
+      const [icon, cls, label] = icons[r.status] || ['?', 'muted', r.status];
+      if (r.status === 'logged' || r.status === 'existing') good++;
+      const text = [label, r.worklogId ? '#' + r.worklogId : '', r.error || ''].filter(Boolean).join(' · ');
+      const row = logRow(icon, r.error && cls === 'good' ? 'bad' : cls, r.entry, text);
+      if (r.worklogId) {
+        const a = document.createElement('a');
+        a.href = jiraHref({ ...r.entry, logged: true, worklogId: r.worklogId }); a.target = '_blank'; a.rel = 'noopener'; a.textContent = '↗';
+        row.insertBefore(a, row.children[3]);
+      }
+      list.appendChild(row);
+    }
+    $('#logInfo').textContent = `Logged ${good} of ${res.results.length}.`;
+    btn.hidden = true;
+    fromView(res.day); history = []; future = [];
+    render(); refreshDays();
+  } catch (e) {
+    $('#logInfo').textContent = 'Error: ' + e.message;
+    btn.textContent = 'Send';
+    if (e.data?.day) { fromView(e.data.day); history = []; future = []; render(); btn.hidden = true; }
+  }
+};
+
+// ---------- navigation and keyboard ----------
+const dateInput = $('#date');
+dateInput.onchange = () => dateInput.value && setDay(dateInput.value);
+function shiftDay(n) { const d = new Date(day + 'T12:00'); d.setDate(d.getDate() + n); setDay(iso(d)); }
+$('#prev').onclick = () => shiftDay(-1);
+$('#next').onclick = () => shiftDay(1);
+$('#today').onclick = () => setDay(iso(new Date()));
+$('#undo').onclick = undo;
+$('#redo').onclick = redo;
+
+document.addEventListener('keydown', e => {
+  const inField = /INPUT|TEXTAREA/.test(document.activeElement?.tagName) || importDlg.open || logDlg.open;
+  if (e.key === 'Escape') {
+    if (drag) endDrag(true);
+    else if (!inField) { selId = null; render(); }
+    return;
+  }
+  if (inField) return;
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && sel()) { e.preventDefault(); deleteSelected(); return; }
+  if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && sel() && !sel().logged) {
+    e.preventDefault();
+    const b = sel(), orig = clone(blocks);
+    blocks = applyDrag({ mode: 'move', id: b.id, m0: 0, orig }, e.key === 'ArrowLeft' ? -SNAP : SNAP);
+    if (!same(orig, blocks)) { history.push(orig); future = []; changed(); }
+    render();
+  }
+});
+
+// The file may have changed in an editor – reload the day on return to the window if nothing waits to be saved.
+addEventListener('focus', async () => {
+  if (dirty || saving || drag) return;
+  try {
+    const v = await api('GET', `/api/days/${day}`);
+    if (v.hash !== hash && !dirty && !saving) { fromView(v); history = []; future = []; render(); toast('Loaded changes from the file.'); }
+    refreshDays();
+  } catch { /* offline */ }
+});
+addEventListener('beforeunload', e => { if (dirty || saving) { flush(); e.preventDefault(); } });
+
+function render() {
+  dateInput.value = day;
+  const tw = $('#tempoWeek');
+  tw.hidden = !cfg.jiraBase;
+  if (cfg.jiraBase) tw.href = tempoWeekHref(day);
+  renderDays(); renderTimeline(); renderSum(); renderForm(); renderOutput();
+}
+setInterval(renderTimeline, 60 * 1000);
+addEventListener('resize', () => { renderTimeline(); renderSum(); });
+
+(async () => {
+  render();
+  try {
+    cfg = await api('GET', '/api/config');
+    render();
+    $('#footer').textContent = `File: ${cfg.file}` + (cfg.tempo ? ` · Tempo: ${cfg.jiraBase}` : ` · Tempo unavailable: ${cfg.tempoError}`);
+  } catch {
+    toast('No server. Run: go run . -open (in the baca directory)', true);
+    return;
+  }
+  await Promise.all([loadDay(day), refreshDays()]);
+})();
+</script>
+</body>
+</html>

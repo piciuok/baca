@@ -1,0 +1,10 @@
+{
+  "worklogFile": "~/.local/share/baca/worklog.txt",
+  "accountEmail": "your.email@example.com",
+  "tokens": {
+    "jira": "",
+    "temp": ""
+  },
+  "jiraBaseUrl": "https://example.atlassian.net",
+  "tempoBaseUrl": "https://api.tempo.io"
+}
