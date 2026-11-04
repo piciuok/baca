@@ -91,7 +91,7 @@ func setup(t *testing.T, content string) (*httptest.Server, *fakeAtlassian, stri
 	var cfg tempo.Config
 	cfg.AccountEmail, cfg.Tokens.Jira, cfg.Tokens.Tempo = "me@example.com", "jira-token", "tempo-token"
 	cfg.JiraBaseURL, cfg.TempoBaseURL = atl.URL, atl.URL
-	s := &Server{Store: worklog.NewStore(path), Web: fstest.MapFS{"index.html": {Data: []byte("<html>")}}, Token: "tok"}
+	s := &Server{Store: worklog.NewStore(path), Web: fstest.MapFS{"index.html": {Data: []byte("<html>")}, "favicon.png": {Data: []byte("\x89PNG")}}, Token: "tok"}
 	s.SetState(&State{Tempo: tempo.New(cfg)})
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
@@ -191,6 +191,11 @@ func TestPutDayAndGuard(t *testing.T) {
 	req.Host = "evil.example.com"
 	if res, _ := http.DefaultClient.Do(req); res.StatusCode != http.StatusForbidden {
 		t.Fatalf("foreign host: %d", res.StatusCode)
+	}
+	for _, p := range []string{"/favicon.png", "/favicon.ico"} { // the logo needs no token
+		if res, _ := http.Get(srv.URL + p); res.StatusCode != 200 || res.Header.Get("Content-Type") != "image/png" {
+			t.Fatalf("%s: %d", p, res.StatusCode)
+		}
 	}
 	res, _ := http.Get(srv.URL + "/?t=tok")
 	if res.StatusCode != 200 || res.Header.Get("X-Frame-Options") != "DENY" || res.Header.Get("Referrer-Policy") != "no-referrer" {

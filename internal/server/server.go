@@ -66,6 +66,8 @@ var ticketRE = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.index)
+	mux.HandleFunc("GET /favicon.png", s.favicon)
+	mux.HandleFunc("GET /favicon.ico", s.favicon)
 	mux.HandleFunc("GET /api/config", s.config)
 	mux.HandleFunc("GET /api/days", s.days)
 	mux.HandleFunc("GET /api/days/{date}", s.getDay)
@@ -105,6 +107,10 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Content-Type-Options", "nosniff")
+		if r.URL.Path == "/favicon.png" || r.URL.Path == "/favicon.ico" { // the logo is public
+			next.ServeHTTP(w, r)
+			return
+		}
 		token := r.Header.Get("X-Baca-Token")
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
 			token = r.URL.Query().Get("t")
@@ -672,4 +678,16 @@ func (s *Server) tempoApply(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, map[string]any{"day": day})
 	}
+}
+
+// favicon is the logo as a PNG (Safari and /favicon.ico requests; others use the inline SVG).
+func (s *Server) favicon(w http.ResponseWriter, r *http.Request) {
+	b, err := fs.ReadFile(s.Web, "favicon.png")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write(b)
 }
