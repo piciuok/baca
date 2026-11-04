@@ -16,7 +16,8 @@ import (
 // Span is a stretch of time with one state. Kinds:
 //   - window: App/Title in front, user active
 //   - idle: no input for a while (App is what was in front)
-//   - meeting: a call window of App titled Title was open (Slack huddle, Zoom, Teams)
+//   - meeting: a call window of App titled Title was open (Slack huddle, Zoom, Teams),
+//     or a calendar event (App: Calendar)
 //   - repo: the git repo Repo (on Branch) changed during the span
 //   - claude: a Claude Code session in Repo wrote during the span
 //   - agent: a coding agent (App: Claude Code, Codex) worked in Repo
@@ -48,15 +49,16 @@ func clock(t time.Time) string { return t.Format("15:04:05") }
 
 // Config is the "activity" section of config.json.
 type Config struct {
-	Enabled *bool        `json:"enabled"` // default true
-	Dir     string       `json:"dir"`     // default: "activity" next to the worklog file
-	System  SystemConfig `json:"system"`
-	Git     GitConfig    `json:"git"`
-	Claude  ClaudeConfig `json:"claude"`
-	Codex   CodexConfig  `json:"codex"`
-	GitLab  GitLabConfig `json:"gitlab"`
-	Jira    JiraConfig   `json:"jira"`
-	GitHub  GitHubConfig `json:"github"`
+	Enabled  *bool          `json:"enabled"` // default true
+	Dir      string         `json:"dir"`     // default: "activity" next to the worklog file
+	System   SystemConfig   `json:"system"`
+	Git      GitConfig      `json:"git"`
+	Claude   ClaudeConfig   `json:"claude"`
+	Codex    CodexConfig    `json:"codex"`
+	GitLab   GitLabConfig   `json:"gitlab"`
+	Jira     JiraConfig     `json:"jira"`
+	GitHub   GitHubConfig   `json:"github"`
+	Calendar CalendarConfig `json:"calendar"`
 
 	JiraAuth JiraAuth `json:"-"` // filled from the Jira/Tempo credentials of config.json
 }
@@ -128,6 +130,13 @@ func (c Config) Probes() []Probe {
 	}
 	if on(c.GitHub.Enabled) && c.GitHub.User != "" {
 		out = append(out, NewGitHubProbe(c.GitHub))
+	}
+	if on(c.Calendar.Enabled) && len(c.Calendar.URLs) > 0 {
+		cal := c.Calendar
+		if cal.Email == "" {
+			cal.Email = c.JiraAuth.Email
+		}
+		out = append(out, NewCalendarProbe(cal))
 	}
 	if on(c.Jira.Enabled) && c.JiraAuth.Token != "" {
 		out = append(out, NewJiraProbe(c.JiraAuth))

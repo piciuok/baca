@@ -48,8 +48,9 @@ The server runs probes that record what happened during the day (`-collect=false
 | `gitlab` | your GitLab events (push, MR comment and approval, merge) of today and yesterday; the ticket comes from the MR title or the branch. Token from the config, `GITLAB_TOKEN` or `glab` | 5 min |
 | `jira` | your changes to issues (status, fields) and comments of today and yesterday. Worklog fields are skipped: logging hours is not the work. Uses the Jira credentials from the config | 10 min |
 | `github` | events of the user `activity.github.user` (push, PR reviews and comments, opened and merged PRs, issue comments) of today and yesterday. Token from the config, `GITHUB_TOKEN` or `gh auth token --user <user>` | 5 min |
+| `calendar` | meetings from private iCal links (`activity.calendar.urls`: Google “Secret address in iCal format”, Outlook “Publish calendar” → ICS), recurring ones included. Skips all-day, cancelled and declined ones (`email`, default `accountEmail`) | 15 min |
 
-- Remote probes (GitLab, GitHub, Jira, …) fetch the whole day every few minutes and replace their own `YYYY-MM-DD.<probe>.jsonl`, so fetching again never duplicates. An event is a point in time, so its span reaches back by the usual length of the action (push 10 min, comment and approval 5 min).
+- Remote probes (GitLab, GitHub, Jira, calendar) fetch the whole day every few minutes and replace their own `YYYY-MM-DD.<probe>.jsonl`, so fetching again never duplicates. An event is a point in time, so its span reaches back by the usual length of the action (push 10 min, comment and approval 5 min).
 - Window titles on macOS need the Accessibility permission for the app baca was started from. Without it only the app name is recorded. Apps in `activity.system.ignoreApps` (password managers by default) never get their titles recorded.
 - Idle time longer than `idleAfterSeconds` (180) reaches back to the last mouse or keyboard input.
 - Meetings are found by a window title pattern per app (`activity.system.meetings`; defaults for Slack `huddle|rozmowa`, `zoom.us`, `Microsoft Teams`, Polish titles included). A step where a call takes more than half of the time becomes its own “📞 …” suggestion with the call title as the description, even without mouse input.
@@ -66,6 +67,7 @@ Configuration (the `activity` section of `config.json`, all optional):
   "codex": { "enabled": true },
   "gitlab": { "instances": [{ "baseUrl": "https://gitlab.example.com", "token": "" }] },
   "jira": { "enabled": true },
-  "github": { "user": "octocat" }
+  "github": { "user": "octocat" },
+  "calendar": { "urls": ["https://calendar.example.com/private-…/basic.ics"] }
 }
 ```

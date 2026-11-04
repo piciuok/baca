@@ -353,3 +353,79 @@ func TestGitHubProbe(t *testing.T) {
 		t.Fatalf("%+v", d.Suggestions)
 	}
 }
+
+func TestCalendarSpans(t *testing.T) {
+	ics := strings.ReplaceAll(`BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:daily
+DTSTART;TZID=Europe/Warsaw:20260105T091500
+DTEND;TZID=Europe/Warsaw:20260105T093000
+RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR
+EXDATE;TZID=Europe/Warsaw:20261103T091500
+SUMMARY:Daily\, team
+BEGIN:VALARM
+SUMMARY:alarm
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:daily
+RECURRENCE-ID;TZID=Europe/Warsaw:20261104T091500
+DTSTART;TZID=Europe/Warsaw:20261104T100000
+DTEND;TZID=Europe/Warsaw:20261104T101500
+SUMMARY:Daily (moved)
+END:VEVENT
+BEGIN:VEVENT
+UID:planning
+DTSTART:20261104T120000Z
+DURATION:PT1H30M
+SUMMARY:Planning
+ continued
+END:VEVENT
+BEGIN:VEVENT
+UID:declined
+DTSTART:20261104T140000Z
+DTEND:20261104T150000Z
+SUMMARY:Not going
+ATTENDEE;PARTSTAT=DECLINED:mailto:Me@Example.com
+END:VEVENT
+BEGIN:VEVENT
+UID:allday
+DTSTART;VALUE=DATE:20261104
+DTEND;VALUE=DATE:20261105
+SUMMARY:Holiday
+END:VEVENT
+BEGIN:VEVENT
+UID:ended
+DTSTART;TZID=Europe/Warsaw:20260105T080000
+DTEND;TZID=Europe/Warsaw:20260105T081500
+RRULE:FREQ=DAILY;UNTIL=20261102T235959Z
+SUMMARY:Old series
+END:VEVENT
+END:VCALENDAR
+`, "\n", "\r\n")
+	waw, _ := time.LoadLocation("Europe/Warsaw")
+	now := time.Date(2026, 11, 4, 18, 0, 0, 0, waw)
+	var got []string
+	for _, s := range CalendarSpans(ics, "me@example.com", now) {
+		got = append(got, s.Date[8:]+" "+s.From[:5]+"-"+s.To[:5]+" "+s.Title)
+	}
+	want := "04 10:00-10:15 Daily (moved) | 04 13:00-14:30 Planningcontinued"
+	if strings.Join(got, " | ") != want {
+		t.Fatalf("got  %v\nwant %s", strings.Join(got, " | "), want)
+	}
+}
+
+func TestOccurrences(t *testing.T) {
+	start := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC) // Thursday
+	got := occurrences(start, "FREQ=WEEKLY;INTERVAL=2;BYDAY=TH,FR;COUNT=5", start.AddDate(1, 0, 0))
+	var s []string
+	for _, t := range got {
+		s = append(s, t.Format("01-02"))
+	}
+	if strings.Join(s, " ") != "01-01 01-02 01-15 01-16 01-29" {
+		t.Fatal(s)
+	}
+	if n := len(occurrences(start, "FREQ=MONTHLY", time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC))); n != 12 {
+		t.Fatal(n)
+	}
+}
