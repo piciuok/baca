@@ -92,6 +92,10 @@ body.resizing, body.resizing *{cursor:ew-resize !important}
 .set-list .item input{flex:1;min-width:0}
 .set-list .item button{flex:none}
 
+.zoombar{display:flex;justify-content:flex-end;align-items:center;gap:4px;margin:-4px 0 4px;font-size:12px}
+.zoombar button{padding:0 8px;font-size:12px;line-height:20px}
+.zoombar #zoomInfo{margin-right:6px}
+
 /* ---------- activity bar ---------- */
 .actbar{position:relative;height:76px;background:var(--panel);border:1px solid var(--line);border-radius:6px;margin-top:6px;overflow:hidden}
 .app{position:absolute;top:5px;height:14px;border-radius:3px;opacity:.85}
@@ -174,6 +178,8 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
 
 <div class="days" id="days"></div>
 
+<div class="zoombar"><span id="zoomInfo" class="muted"></span>
+  <button id="panLeft" title="Earlier">◀</button><button id="zoomOut" title="Zoom out (⌘/Ctrl + wheel, pinch)">−</button><button id="zoomIn" title="Zoom in (⌘/Ctrl + wheel, pinch)">+</button><button id="zoomFit" title="Whole day">Fit</button><button id="panRight" title="Later">▶</button></div>
 <div class="track" id="track"><div class="grid" id="grid"></div></div>
 <div class="ruler" id="ruler"></div>
 
@@ -282,7 +288,10 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const clone = o => JSON.parse(JSON.stringify(o));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const uid = () => Math.random().toString(36).slice(2, 10);
-const pct = m => (m - AXIS_START) / (AXIS_END - AXIS_START) * 100;
+// the visible part of the axis: the whole working day, or less when zoomed in
+let VIEW_START = AXIS_START, VIEW_END = AXIS_END;
+const MIN_VIEW = 30;   // minutes: the deepest zoom
+const pct = m => (m - VIEW_START) / (VIEW_END - VIEW_START) * 100;
 function colorOf(t) {
   if (!t) return '#6b7280';
   let h = 0; for (const c of t) h = (h * 31 + c.charCodeAt(0)) >>> 0;
@@ -400,35 +409,61 @@ function renderDays() {
 const track = $('#track');
 function minAt(clientX) {
   const r = track.getBoundingClientRect();
-  return AXIS_START + (clientX - r.left) / r.width * (AXIS_END - AXIS_START);
+  return VIEW_START + (clientX - r.left) / r.width * (VIEW_END - VIEW_START);
 }
 
 function buildAxis() {
   const grid = $('#grid'), ruler = $('#ruler');
   grid.innerHTML = ''; ruler.innerHTML = '';
-  for (let m = Math.ceil((AXIS_START + 1) / 30) * 30; m < AXIS_END; m += 30) {
+  const span = VIEW_END - VIEW_START;
+  // grid lines and labels get denser as you zoom in
+  const [line, label] = span <= 60 ? [5, 15] : span <= 180 ? [15, 30] : span <= 360 ? [15, 60] : [30, 60];
+  for (let m = Math.ceil((VIEW_START + 1) / line) * line; m < VIEW_END; m += line) {
     const i = document.createElement('i');
     if (m % 60) i.className = 'half';
     i.style.left = pct(m) + '%';
     grid.appendChild(i);
   }
-  const hours = [AXIS_START];
-  for (let m = Math.ceil((AXIS_START + 1) / 60) * 60; m < AXIS_END; m += 60) if (m - AXIS_START >= 30 && AXIS_END - m >= 30) hours.push(m);
-  hours.push(AXIS_END);
-  for (const m of hours) {
+  const marks = [VIEW_START];
+  for (let m = Math.ceil((VIEW_START + 1) / label) * label; m < VIEW_END; m += label) if (m - VIEW_START >= label / 2 && VIEW_END - m >= label / 2) marks.push(m);
+  marks.push(VIEW_END);
+  for (const m of marks) {
     const s = document.createElement('span');
-    s.textContent = fmt(m);
+    s.textContent = fmt(Math.round(m));
     s.style.left = pct(m) + '%';
-    if (m === AXIS_START) s.style.transform = 'none';
-    if (m === AXIS_END) s.style.transform = 'translateX(-100%)';
+    if (m === VIEW_START) s.style.transform = 'none';
+    if (m === VIEW_END) s.style.transform = 'translateX(-100%)';
     ruler.appendChild(s);
   }
+  renderZoom();
+}
+// zoom and pan: the timeline and the activity bar share the view
+function setView(a, b) {
+  const span = clamp(b - a, MIN_VIEW, AXIS_END - AXIS_START);
+  a = clamp(a, AXIS_START, AXIS_END - span);
+  VIEW_START = a; VIEW_END = a + span;
+  buildAxis(); renderTimeline(); renderActivity();
+}
+const zoomed = () => VIEW_END - VIEW_START < AXIS_END - AXIS_START;
+function zoomAt(m, factor) {
+  const span = (VIEW_END - VIEW_START) / factor, ratio = (m - VIEW_START) / (VIEW_END - VIEW_START);
+  setView(m - ratio * span, m - ratio * span + span);
+}
+function pan(minutes) { setView(VIEW_START + minutes, VIEW_END + minutes); }
+function renderZoom() {
+  const z = $('#zoomInfo'); if (!z) return;
+  z.textContent = zoomed() ? `${fmt(Math.round(VIEW_START))}–${fmt(Math.round(VIEW_END))}` : '';
+  $('#panLeft').disabled = !zoomed() || VIEW_START <= AXIS_START;
+  $('#panRight').disabled = !zoomed() || VIEW_END >= AXIS_END;
+  $('#zoomFit').disabled = !zoomed();
+  $('#zoomIn').disabled = VIEW_END - VIEW_START <= MIN_VIEW;
 }
 buildAxis();
 // working hours from /api/config (minutes from midnight)
 function applyWorkday(w) {
   if (!w || !(w.end > w.start)) return;
   AXIS_START = w.start; AXIS_END = w.end; TARGET = w.target || TARGET; SUM_SCALE = TARGET / 0.8;
+  VIEW_START = AXIS_START; VIEW_END = AXIS_END;
   buildAxis();
 }
 
@@ -439,11 +474,14 @@ function renderTimeline() {
     const el = document.createElement('div');
     el.className = 'block' + (b.ghost ? ' ghost' : '') + (b.logged ? ' locked' : '') + (b.id === selId ? ' sel' : '');
     el.dataset.id = b.id;
-    el.style.left = pct(b.start) + '%';
-    el.style.width = (pct(b.end) - pct(b.start)) + '%';
+    if (b.end <= VIEW_START || b.start >= VIEW_END) continue;
+    // clipped to the view: the label stays visible, and a cut side has no resize handle
+    const a = Math.max(b.start, VIEW_START), z = Math.min(b.end, VIEW_END);
+    el.style.left = pct(a) + '%';
+    el.style.width = (pct(z) - pct(a)) + '%';
     if (!b.ghost) el.style.background = colorOf(b.ticket);
-    el.innerHTML = '<span class="t"></span><span class="d"></span>' +
-      (b.ghost || b.logged ? '' : '<span class="h l" data-edge="l"></span><span class="h r" data-edge="r"></span>');
+    el.innerHTML = '<span class="t"></span><span class="d"></span>' + (b.ghost || b.logged ? '' :
+      (b.start >= VIEW_START ? '<span class="h l" data-edge="l"></span>' : '') + (b.end <= VIEW_END ? '<span class="h r" data-edge="r"></span>' : ''));
     el.querySelector('.t').textContent = b.ghost ? `${fmt(b.start)}–${fmt(b.end)}` : (b.logged ? '✓ ' : '') + (b.ticket || '—');
     el.querySelector('.d').textContent = b.ghost ? '' : (b.desc || '');
     track.appendChild(el);
@@ -451,7 +489,7 @@ function renderTimeline() {
   const now = new Date();
   if (day === iso(now)) {
     const m = now.getHours() * 60 + now.getMinutes();
-    if (m > AXIS_START && m < AXIS_END) {
+    if (m > VIEW_START && m < VIEW_END) {
       const n = document.createElement('div');
       n.className = 'now'; n.style.left = pct(m) + '%';
       track.appendChild(n);
@@ -625,25 +663,25 @@ function renderActivity() {
   const dayAct = act?.day;
   for (const a of dayAct?.apps || []) {
     const s = a.start / 60, e = a.end / 60;
-    if (e <= AXIS_START || s >= AXIS_END) continue;
+    if (e <= VIEW_START || s >= VIEW_END) continue;
     const el = document.createElement('div');
     el.className = 'app' + (a.idle ? ' idle' : '');
-    el.style.left = pct(Math.max(s, AXIS_START)) + '%';
-    el.style.width = Math.max(0.15, pct(Math.min(e, AXIS_END)) - pct(Math.max(s, AXIS_START))) + '%';
+    el.style.left = pct(Math.max(s, VIEW_START)) + '%';
+    el.style.width = Math.max(0.15, pct(Math.min(e, VIEW_END)) - pct(Math.max(s, VIEW_START))) + '%';
     el.style.background = colorOf(a.app);
     el.dataset.tip = `${a.idle ? 'idle · ' : ''}${a.app}  ${fmt(Math.floor(s))} – ${fmt(Math.floor(e))} (${dur(Math.round(e - s))})`;
     actbar.appendChild(el);
   }
   let open = 0;
   (dayAct?.suggestions || []).forEach((g, i) => {
-    if (g.end <= AXIS_START || g.start >= AXIS_END) return;
+    if (g.end <= VIEW_START || g.start >= VIEW_END) return;
     const free = freeParts(g.start, g.end);
     if (free.length) open++;
     const el = document.createElement('div');
     el.className = 'sug' + (free.length ? '' : ' taken');
     el.dataset.i = i;
-    el.style.left = pct(Math.max(g.start, AXIS_START)) + '%';
-    el.style.width = (pct(Math.min(g.end, AXIS_END)) - pct(Math.max(g.start, AXIS_START))) + '%';
+    el.style.left = pct(Math.max(g.start, VIEW_START)) + '%';
+    el.style.width = (pct(Math.min(g.end, VIEW_END)) - pct(Math.max(g.start, VIEW_START))) + '%';
     el.style.borderColor = el.style.color = g.ticket ? colorOf(g.ticket) : 'var(--muted)';
     el.innerHTML = '<span class="t"></span><span class="d"></span>';
     el.querySelector('.t').textContent = g.ticket || (g.meeting ? '📞 ' + g.meeting.replace(/^[^·]*· /, '') : '?');
@@ -703,6 +741,26 @@ actbar.addEventListener('pointermove', e => {
   placeTip(e.clientX, actbar.getBoundingClientRect().bottom + 6);
 });
 actbar.addEventListener('pointerleave', () => { $('#tip').style.display = 'none'; });
+
+// ⌘/Ctrl + wheel or a pinch zooms around the cursor; a sideways swipe or Shift + wheel pans
+function onWheel(e) {
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    zoomAt(clamp(minAt(e.clientX), VIEW_START, VIEW_END), Math.exp(-e.deltaY * 0.003));
+    return;
+  }
+  const dx = e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX;
+  if (zoomed() && Math.abs(dx) > Math.abs(e.shiftKey ? 0 : e.deltaY)) {
+    e.preventDefault();
+    pan(dx / track.getBoundingClientRect().width * (VIEW_END - VIEW_START));
+  }
+}
+for (const el of [track, actbar, $('#ruler')]) el.addEventListener('wheel', onWheel, { passive: false });
+$('#zoomIn').onclick = () => zoomAt((VIEW_START + VIEW_END) / 2, 2);
+$('#zoomOut').onclick = () => zoomAt((VIEW_START + VIEW_END) / 2, 0.5);
+$('#zoomFit').onclick = () => setView(AXIS_START, AXIS_END);
+$('#panLeft').onclick = () => pan(-(VIEW_END - VIEW_START) / 2);
+$('#panRight').onclick = () => pan((VIEW_END - VIEW_START) / 2);
 
 // ---------- settings: config.json through /api/settings ----------
 const SETTINGS = [

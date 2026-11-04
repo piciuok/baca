@@ -76,6 +76,7 @@ day.
 ## The day in the UI
 
 - **Timeline** (top): drag on empty space to add a block, drag an edge to resize (touching neighbours share the edge, a gap fills first), drag the middle to move. Logged blocks are striped and locked.
+- **Zoom**: pinch or ⌘/Ctrl + wheel over the timeline zooms the timeline and the activity bar together (down to 30 minutes); swipe sideways or Shift + wheel pans; − + Fit ◀ ▶ do the same with buttons.
 - **Activity** (middle): the apps you used and suggested blocks. A click adds a suggestion into the free time, “Accept all suggestions” fills the day; a suggestion next to an open block of the same ticket extends that block. Hover shows where the ticket came from, the apps and the window titles.
 - **⇆ Merge** joins touching open blocks of one ticket into one; their descriptions are kept in order, without “Continue task” fillers. Logged blocks stay separate (each is its own worklog in Tempo).
 - **Totals** (bottom): time per ticket, the daily target as a red line, overtime past it.
