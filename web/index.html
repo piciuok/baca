@@ -72,6 +72,23 @@ body.resizing, body.resizing *{cursor:ew-resize !important}
 .tip.multi{white-space:pre-wrap;max-width:min(680px,92vw);padding:8px 10px;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;box-shadow:0 6px 24px rgba(0,0,0,.5)}
 .tip.multi b{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;font-size:13px}
 
+/* ---------- settings ---------- */
+#settingsDlg{width:min(760px,94vw);max-height:88vh;padding:0}
+#settingsDlg form{display:flex;flex-direction:column;max-height:88vh}
+#setBody{overflow:auto;padding:4px 16px 8px}
+#setHead,#setFoot{padding:12px 16px;display:flex;align-items:center;gap:8px}
+#setFoot{border-top:1px solid var(--line)}
+.set-sec{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:10px 0}
+.set-sec legend{padding:0 6px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.set-row{display:grid;grid-template-columns:190px 1fr;gap:6px 10px;align-items:center;margin:6px 0}
+.set-row label{color:var(--muted)}
+.set-row input[type=text],.set-row input[type=password],.set-row input[type=number],.set-row input[type=time],.set-row textarea{width:100%}
+.set-row textarea{height:64px;font:12px/1.4 ui-monospace,Menlo,monospace}
+.set-hint{grid-column:2;font-size:11px;color:var(--muted);margin-top:-3px}
+.set-list .item{display:flex;gap:6px;margin:4px 0}
+.set-list .item input{flex:1;min-width:0}
+.set-list .item button{flex:none}
+
 /* ---------- activity bar ---------- */
 .actbar{position:relative;height:44px;background:var(--panel);border:1px solid var(--line);border-radius:6px;margin-top:6px;overflow:hidden}
 .app{position:absolute;top:4px;height:8px;border-radius:2px;opacity:.85}
@@ -139,6 +156,7 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
   <button id="undo" title="Undo (⌘Z)">↶</button>
   <button id="redo" title="Redo (⇧⌘Z)">↷</button>
   <button id="importBtn">Import worklog</button>
+  <button id="settingsBtn" title="Working hours, accounts, tokens, probes">⚙</button>
   <button id="logBtn" class="primary">Log to Tempo</button>
 </header>
 
@@ -196,6 +214,15 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
     <button id="importCancel">Cancel</button><button id="importOk" class="primary">Load</button></div>
 </dialog>
 
+<dialog id="settingsDlg">
+  <form method="dialog">
+    <div id="setHead"><h3 style="margin:0">Settings</h3><span class="grow" style="flex:1"></span><span id="setPath" class="muted" style="font-size:11px"></span></div>
+    <div id="setBody"></div>
+    <div id="setFoot"><span id="setInfo" class="muted" style="font-size:12px">Tokens are stored in a file only you can read (600) and never come back to the browser. ••• means “unchanged”.</span><span style="flex:1"></span>
+      <button type="button" id="setCancel">Cancel</button><button type="button" id="setSave" class="primary">Save</button></div>
+  </form>
+</dialog>
+
 <dialog id="logDlg">
   <h3 style="margin-top:0" id="logTitle">Logging to Tempo</h3>
   <ul class="loglist" id="logList"></ul>
@@ -205,10 +232,10 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
 
 <script>
 // ---------- configuration (to move into the settings later) ----------
-const AXIS_START = 6 * 60, AXIS_END = 18 * 60;   // day timeline 06:00–18:00
+let AXIS_START = 6 * 60, AXIS_END = 18 * 60;     // day timeline; from the settings (working hours)
 const SNAP = 5, MIN_LEN = 5;                      // step and minimum block length [min]
-const TARGET = 8 * 60;                            // daily target
-const SUM_SCALE = TARGET / 0.8;                   // 8h = 80% of the sum bar width
+let TARGET = 8 * 60;                              // daily target; from the settings
+let SUM_SCALE = TARGET / 0.8;                     // target = 80% of the sum bar width
 const SAVE_DELAY = 400;                           // ms without changes before writing the file
 const PALETTE = ['#5aa9ff','#f6c344','#6dd3a8','#ff8a65','#b79cff','#4dd0e1','#f48fb1','#aed581','#ffb74d','#90a4ae','#e57373','#81c784','#ce93d8','#80cbc4'];
 const DAYS = ['Niedziela','Poniedziałek','Wtorek','Środa','Czwartek','Piątek','Sobota'];
@@ -345,15 +372,19 @@ function minAt(clientX) {
   return AXIS_START + (clientX - r.left) / r.width * (AXIS_END - AXIS_START);
 }
 
-(function buildAxis() {
+function buildAxis() {
   const grid = $('#grid'), ruler = $('#ruler');
-  for (let m = AXIS_START + 30; m < AXIS_END; m += 30) {
+  grid.innerHTML = ''; ruler.innerHTML = '';
+  for (let m = Math.ceil((AXIS_START + 1) / 30) * 30; m < AXIS_END; m += 30) {
     const i = document.createElement('i');
     if (m % 60) i.className = 'half';
     i.style.left = pct(m) + '%';
     grid.appendChild(i);
   }
-  for (let m = AXIS_START; m <= AXIS_END; m += 60) {
+  const hours = [AXIS_START];
+  for (let m = Math.ceil((AXIS_START + 1) / 60) * 60; m < AXIS_END; m += 60) if (m - AXIS_START >= 30 && AXIS_END - m >= 30) hours.push(m);
+  hours.push(AXIS_END);
+  for (const m of hours) {
     const s = document.createElement('span');
     s.textContent = fmt(m);
     s.style.left = pct(m) + '%';
@@ -361,7 +392,14 @@ function minAt(clientX) {
     if (m === AXIS_END) s.style.transform = 'translateX(-100%)';
     ruler.appendChild(s);
   }
-})();
+}
+buildAxis();
+// working hours from /api/config (minutes from midnight)
+function applyWorkday(w) {
+  if (!w || !(w.end > w.start)) return;
+  AXIS_START = w.start; AXIS_END = w.end; TARGET = w.target || TARGET; SUM_SCALE = TARGET / 0.8;
+  buildAxis();
+}
 
 function renderTimeline() {
   track.querySelectorAll('.block,.now').forEach(e => e.remove());
@@ -630,6 +668,154 @@ actbar.addEventListener('pointermove', e => {
 });
 actbar.addEventListener('pointerleave', () => { $('#tip').style.display = 'none'; });
 
+// ---------- settings: config.json through /api/settings ----------
+const SETTINGS = [
+  { title: 'Working hours', fields: [
+    { path: 'workday.start', label: 'Timeline start', type: 'time', def: '06:00' },
+    { path: 'workday.end', label: 'Timeline end', type: 'time', def: '18:00' },
+    { path: 'workday.targetHours', label: 'Daily target [h]', type: 'number', step: 0.25, def: 8, hint: 'the red line on the sum bar' },
+  ]},
+  { title: 'Worklog file', fields: [
+    { path: 'worklogFile', label: 'Path', type: 'text', hint: 'the -file flag at start wins' },
+  ]},
+  { title: 'Jira and Tempo (logging hours)', fields: [
+    { path: 'jiraBaseUrl', label: 'Jira address', type: 'text', placeholder: 'https://company.atlassian.net' },
+    { path: 'accountEmail', label: 'Jira account e-mail', type: 'text' },
+    { path: 'tokens.jira', label: 'Jira token', type: 'secret', hint: 'id.atlassian.com → Security → API tokens' },
+    { path: 'tokens.temp', label: 'Tempo token', type: 'secret', hint: 'Tempo → Settings → API integration' },
+    { path: 'tempoBaseUrl', label: 'Tempo API address', type: 'text', placeholder: 'https://api.tempo.io' },
+  ]},
+  { title: 'GitLab', fields: [
+    { path: 'activity.gitlab.enabled', label: 'Probe enabled', type: 'bool' },
+    { path: 'activity.gitlab.instances', label: 'Instances', type: 'objects', add: 'instance', item: [
+      { key: 'baseUrl', placeholder: 'https://gitlab.example.com' },
+      { key: 'token', secret: true, placeholder: 'token (empty = from glab)' } ] },
+  ]},
+  { title: 'GitHub', fields: [
+    { path: 'activity.github.enabled', label: 'Probe enabled', type: 'bool' },
+    { path: 'activity.github.accounts', label: 'Accounts', type: 'objects', add: 'account', item: [
+      { key: 'user', placeholder: 'login' },
+      { key: 'token', secret: true, placeholder: 'token (empty = gh auth token --user)' },
+      { key: 'baseUrl', placeholder: 'API (empty = github.com)' } ] },
+  ]},
+  { title: 'Jira (activity)', fields: [
+    { path: 'activity.jira.enabled', label: 'Probe enabled', type: 'bool', hint: 'your changes and comments; uses the Jira credentials above' },
+  ]},
+  { title: 'Calendar', fields: [
+    { path: 'activity.calendar.enabled', label: 'Probe enabled', type: 'bool' },
+    { path: 'activity.calendar.urls', label: 'Private iCal links', type: 'strings', secret: true, add: 'calendar', placeholder: 'https://…/basic.ics',
+      hint: 'Google: calendar settings → Secret address in iCal format; Outlook: Publish calendar → ICS' },
+    { path: 'activity.calendar.email', label: 'Your e-mail in invitations', type: 'text', hint: 'declined meetings are skipped; empty = the Jira e-mail' },
+  ]},
+  { title: 'Slack', fields: [
+    { path: 'activity.slack.enabled', label: 'Probe enabled', type: 'bool' },
+    { path: 'activity.slack.token', label: 'User token', type: 'secret', placeholder: 'xoxp-…', hint: 'scope search:read; without a token the system probe still collects Slack time and huddles' },
+  ]},
+  { title: 'Local probes', fields: [
+    { path: 'activity.enabled', label: 'Collect activity', type: 'bool' },
+    { path: 'activity.dir', label: 'Data directory', type: 'text', hint: 'empty = activity next to the worklog file' },
+    { path: 'activity.system.enabled', label: 'System (windows, idle)', type: 'bool' },
+    { path: 'activity.system.intervalSeconds', label: 'Every [s]', type: 'number', def: 5 },
+    { path: 'activity.system.idleAfterSeconds', label: 'Idle after [s]', type: 'number', def: 180 },
+    { path: 'activity.system.ignoreApps', label: 'No window titles', type: 'lines', hint: 'one app per line (password managers)' },
+    { path: 'activity.system.meetings', label: 'Call windows', type: 'map', hint: 'per line: App = title regular expression' },
+    { path: 'activity.git.enabled', label: 'Git', type: 'bool' },
+    { path: 'activity.git.repos', label: 'Repositories', type: 'lines', hint: 'patterns, e.g. ~/Projects/* (one per line)' },
+    { path: 'activity.claude.enabled', label: 'Claude Code', type: 'bool' },
+    { path: 'activity.codex.enabled', label: 'Codex', type: 'bool' },
+  ]},
+];
+let settingsCfg = null, settingsMask = '';
+const getPath = (o, p) => p.split('.').reduce((a, k) => a == null ? a : a[k], o);
+function setPath(o, p, v) {
+  const ks = p.split('.'); let a = o;
+  for (const k of ks.slice(0, -1)) a = a[k] ??= {};
+  a[ks.at(-1)] = v;
+}
+function settingsField(f) {
+  const row = document.createElement('div'); row.className = 'set-row';
+  const lab = document.createElement('label'); lab.textContent = f.label; row.append(lab);
+  const v = getPath(settingsCfg, f.path);
+  let el;
+  const input = (type, val, ph) => { const i = document.createElement('input'); i.type = type; i.value = val ?? ''; if (ph) i.placeholder = ph; return i; };
+  const listBox = (rows, mk, addLabel) => {
+    const box = document.createElement('div'); box.className = 'set-list';
+    const addRow = val => {
+      const it = document.createElement('div'); it.className = 'item';
+      it.append(...mk(val));
+      const x = document.createElement('button'); x.type = 'button'; x.textContent = '×'; x.title = 'remove'; x.onclick = () => it.remove();
+      it.append(x); box.insertBefore(it, addBtn);
+    };
+    const addBtn = document.createElement('button'); addBtn.type = 'button'; addBtn.textContent = '+ ' + addLabel; addBtn.onclick = () => addRow(null);
+    box.append(addBtn);
+    for (const r of rows || []) addRow(r);
+    return box;
+  };
+  switch (f.type) {
+    case 'bool': el = input('checkbox'); el.checked = v !== false; break;
+    case 'number': el = input('number', v || f.def); el.step = f.step || 1; el.min = 0; break;
+    case 'time': el = input('time', v || f.def); break;
+    case 'secret': el = input('password', v, f.placeholder); el.autocomplete = 'off'; break;
+    case 'lines': el = document.createElement('textarea'); el.value = (v || []).join('\n'); break;
+    case 'map': el = document.createElement('textarea'); el.value = Object.entries(v || {}).map(([k, x]) => `${k} = ${x}`).join('\n'); break;
+    case 'strings': el = listBox(v, val => [input(f.secret ? 'password' : 'text', val, f.placeholder)], f.add); break;
+    case 'objects': el = listBox(v, val => f.item.map(it => { const i = input(it.secret ? 'password' : 'text', val?.[it.key], it.placeholder); i.dataset.key = it.key; return i; }), f.add); break;
+    default: el = input('text', v, f.placeholder);
+  }
+  el.dataset.path = f.path; el.dataset.type = f.type;
+  row.append(el);
+  if (f.hint) { const h = document.createElement('div'); h.className = 'set-hint'; h.textContent = f.hint; row.append(h); }
+  return row;
+}
+async function openSettings() {
+  try {
+    const r = await api('GET', '/api/settings');
+    settingsCfg = r.config; settingsMask = r.mask;
+    $('#setPath').textContent = r.path;
+  } catch (e) { return toast('Settings unavailable: ' + e.message, true); }
+  const body = $('#setBody'); body.innerHTML = '';
+  for (const sec of SETTINGS) {
+    const fs = document.createElement('fieldset'); fs.className = 'set-sec';
+    const lg = document.createElement('legend'); lg.textContent = sec.title; fs.append(lg);
+    for (const f of sec.fields) fs.append(settingsField(f));
+    body.append(fs);
+  }
+  $('#settingsDlg').showModal();
+}
+function readSettings() {
+  const out = clone(settingsCfg);
+  for (const el of $('#setBody').querySelectorAll('[data-path]')) {
+    const p = el.dataset.path, t = el.dataset.type;
+    let v;
+    switch (t) {
+      case 'bool': v = el.checked; break;
+      case 'number': v = el.value === '' ? 0 : Number(el.value); break;
+      case 'lines': v = el.value.split('\n').map(x => x.trim()).filter(Boolean); break;
+      case 'map': v = {}; for (const line of el.value.split('\n')) { const i = line.indexOf('='); if (i > 0) v[line.slice(0, i).trim()] = line.slice(i + 1).trim(); } break;
+      case 'strings': v = [...el.querySelectorAll('.item input')].map(i => i.value.trim()).filter(Boolean); break;
+      case 'objects': v = [...el.querySelectorAll('.item')].map(it => Object.fromEntries([...it.querySelectorAll('input')].map(i => [i.dataset.key, i.value.trim()]))).filter(o => Object.values(o).some(Boolean)); break;
+      default: v = el.value.trim();
+    }
+    setPath(out, p, v);
+  }
+  return out;
+}
+$('#settingsBtn').onclick = openSettings;
+$('#setCancel').onclick = () => $('#settingsDlg').close();
+$('#setSave').onclick = async () => {
+  const btn = $('#setSave'); btn.disabled = true;
+  try {
+    await api('PUT', '/api/settings', readSettings());
+    $('#settingsDlg').close();
+    cfg = await api('GET', '/api/config');
+    applyWorkday(cfg.workday);
+    render(); loadActivity();
+    $('#footer').textContent = `File: ${cfg.file}` + (cfg.tempo ? ` · Tempo: ${cfg.jiraBase}` : ` · Tempo unavailable: ${cfg.tempoError}`);
+    toast('Settings saved, probes reloaded.');
+  } catch (e) { toast('Not saved: ' + e.message, true); }
+  finally { btn.disabled = false; }
+};
+
 // ---------- bar 2: totals, ascending ----------
 function aggregate() {
   const agg = {};
@@ -671,11 +857,11 @@ function renderSum() {
   }
   const diff = total - TARGET;
   const cls = diff > 0 ? 'over' : diff < 0 ? 'under' : 'ok';
-  const diffTxt = diff > 0 ? `overtime +${dur(diff)}` : diff < 0 ? `missing ${dur(-diff)}` : 'exactly 8h';
+  const diffTxt = diff > 0 ? `overtime +${dur(diff)}` : diff < 0 ? `missing ${dur(-diff)}` : 'on target';
   const logged = blocks.filter(b => b.logged).length;
   const logTxt = !blocks.length ? '' : logged === blocks.length ? ' · <span class="ok">✓ logged</span>'
     : logged ? ` · <span class="under">logged ${logged}/${blocks.length}</span>` : '';
-  $('#stat').innerHTML = `Total <b>${dur(total)}</b> / 8h 00m · <span class="${cls}">${diffTxt}</span>${logTxt}`;
+  $('#stat').innerHTML = `Total <b>${dur(total)}</b> / ${dur(TARGET)} · <span class="${cls}">${diffTxt}</span>${logTxt}`;
   const open = blocks.filter(b => !b.logged).length;
   $('#logBtn').disabled = !open;
   $('#logBtn').textContent = open ? `Log to Tempo (${open})` : 'Log to Tempo';
@@ -946,7 +1132,7 @@ $('#undo').onclick = undo;
 $('#redo').onclick = redo;
 
 document.addEventListener('keydown', e => {
-  const inField = /INPUT|TEXTAREA/.test(document.activeElement?.tagName) || importDlg.open || logDlg.open;
+  const inField = /INPUT|TEXTAREA/.test(document.activeElement?.tagName) || importDlg.open || logDlg.open || $("#settingsDlg").open;
   if (e.key === 'Escape') {
     if (drag) endDrag(true);
     else if (!inField) { selId = null; render(); }
@@ -991,6 +1177,7 @@ addEventListener('resize', () => { renderTimeline(); renderSum(); });
   render();
   try {
     cfg = await api('GET', '/api/config');
+    applyWorkday(cfg.workday);
     render();
     $('#footer').textContent = `File: ${cfg.file}` + (cfg.tempo ? ` · Tempo: ${cfg.jiraBase}` : ` · Tempo unavailable: ${cfg.tempoError}`);
   } catch {

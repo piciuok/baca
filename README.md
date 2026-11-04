@@ -7,7 +7,7 @@ go run . -open                     # http://127.0.0.1:7788
 go test ./...
 ```
 
-Configuration: `config.json` next to the binary (with `go run`, in the working directory). See `config.json.dist`: `worklogFile`, `accountEmail`, `tokens.jira`, `tokens.temp`, `jiraBaseUrl`, `tempoBaseUrl`. Without tokens the app works, only logging to Tempo is off.
+Configuration: `config.json` next to the binary (with `go run`, in the working directory), see `config.json.dist`. Everything can be changed in the UI (⚙ Settings): working hours (timeline and daily target), the worklog file, Jira and Tempo, GitLab and GitHub accounts, calendars, Slack and the local probes. The file is written atomically with mode 600 and the Tempo client and the probes reload at once, without a restart. Tokens and private links never go back to the browser: the UI sees `••••••`, and sending the mask back keeps the stored value. Without Jira and Tempo tokens the app works, only logging to Tempo is off.
 
 | flag | env | default |
 |---|---|---|
@@ -68,7 +68,7 @@ Configuration (the `activity` section of `config.json`, all optional):
   "codex": { "enabled": true },
   "gitlab": { "instances": [{ "baseUrl": "https://gitlab.example.com", "token": "" }] },
   "jira": { "enabled": true },
-  "github": { "user": "octocat" },
+  "github": { "accounts": [{ "user": "octocat", "token": "" }] },
   "calendar": { "urls": ["https://calendar.example.com/private-…/basic.ics"] },
   "slack": { "token": "xoxp-…" }
 }

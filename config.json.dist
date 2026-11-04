@@ -20,6 +20,19 @@
           "token": ""
         }
       ]
+    },
+    "github": {
+      "accounts": [
+        {
+          "user": "octocat",
+          "token": ""
+        }
+      ]
     }
+  },
+  "workday": {
+    "start": "06:00",
+    "end": "18:00",
+    "targetHours": 8
   }
 }
