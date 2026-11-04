@@ -34,5 +34,9 @@
     "start": "06:00",
     "end": "18:00",
     "targetHours": 8
+  },
+  "updates": {
+    "check": true,
+    "prerelease": false
   }
 }

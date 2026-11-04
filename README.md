@@ -2,16 +2,28 @@
 
 A bar of your working day that turns into a worklog in a plain text file as you go, with logging to Tempo.
 
+Lives in the menu bar (macOS) or the system tray (Linux). The icon is a ring that fills up towards the daily target, with today's total next to it. Menu: Open, Settings, Update, Start at login, Quit. The UI runs in the browser at `http://127.0.0.1:7788`.
+
 ```
-go run . -open                     # http://127.0.0.1:7788
+make install                       # builds, copies to ~/.local/bin, enables start at login
+baca                         # icon + server (from a terminal it starts in the background)
+baca serve -open             # server only, no icon (development; make run)
+baca update [--check]        # update to the latest release
 go test ./...
 ```
 
-Configuration: `config.json` next to the binary (with `go run`, in the working directory), see `config.json.dist`. Everything can be changed in the UI (⚙ Settings): working hours (timeline and daily target), the worklog file, Jira and Tempo, GitLab and GitHub accounts, calendars, Slack and the local probes. The file is written atomically with mode 600 and the Tempo client and the probes reload at once, without a restart. Tokens and private links never go back to the browser: the UI sees `••••••`, and sending the mask back keeps the stored value. Without Jira and Tempo tokens the app works, only logging to Tempo is off.
+## Releases and updates
+
+- Pushing a `vX.Y.Z` tag (`vX.Y.Z-rc.N` is a pre-release) runs `.github/workflows/release.yml`: it tests, builds macOS (cgo, arm64 and amd64) and Linux (arm64 and amd64) and publishes a release with `baca_<version>_<os>_<arch>.tar.gz` archives and `checksums.txt`. Only the repo owner releases.
+- The app checks for releases every 6 h (Settings → Updates), tells you once about a new version and shows “⬆ Update” in the menu and in the UI footer. Updating downloads the archive, checks it against `checksums.txt`, swaps the binary in place and starts it again (under the LaunchAgent through `launchctl kickstart`).
+- The version and the release repo are set at build time (`-X main.version`, `-X baca/internal/update.Repo`). A development build never replaces itself (`baca update --force`).
+- Update status and tray logs are in `~/.local/state/baca`.
+
+Configuration: `~/.config/baca/config.json` (an older `config.json` next to the binary or in the working directory is read too, and `install` moves it), see `config.json.dist`. Everything can be changed in the UI (⚙ Settings): working hours (timeline and daily target), the worklog file, updates, Jira and Tempo, GitLab and GitHub accounts, calendars, Slack and the local probes. The file is written atomically with mode 600 and the Tempo client and the probes reload at once, without a restart. Tokens and private links never go back to the browser: the UI sees `••••••`, and sending the mask back keeps the stored value. Without Jira and Tempo tokens the app works, only logging to Tempo is off.
 
 | flag | env | default |
 |---|---|---|
-| `-config` | `BACA_CONFIG` | `config.json` in the project |
+| `-config` | `BACA_CONFIG` | `~/.config/baca/config.json` |
 | `-file` | `BACA_FILE` | `worklogFile` from the config, else `~/.local/share/baca/worklog.txt` |
 | `-addr` | `BACA_ADDR` | `127.0.0.1:7788` (localhost only) |
 

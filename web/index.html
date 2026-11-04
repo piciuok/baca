@@ -203,7 +203,7 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
   </section>
 </div>
 
-<footer class="muted" id="footer"></footer>
+<footer class="muted"><span id="footer"></span> <span id="version"></span> <button id="updBtn" hidden></button></footer>
 
 <div class="tip" id="tip"></div>
 <div class="toast" id="toast"></div>
@@ -715,6 +715,10 @@ const SETTINGS = [
     { path: 'activity.slack.enabled', label: 'Probe enabled', type: 'bool' },
     { path: 'activity.slack.token', label: 'User token', type: 'secret', placeholder: 'xoxp-…', hint: 'scope search:read; without a token the system probe still collects Slack time and huddles' },
   ]},
+  { title: 'Updates', fields: [
+    { path: 'updates.check', label: 'Check for new versions', type: 'bool', hint: 'every 6 h; installs only after clicking “Update”' },
+    { path: 'updates.prerelease', label: 'Pre-releases too', type: 'bool', def: false },
+  ]},
   { title: 'Local probes', fields: [
     { path: 'activity.enabled', label: 'Collect activity', type: 'bool' },
     { path: 'activity.dir', label: 'Data directory', type: 'text', hint: 'empty = activity next to the worklog file' },
@@ -756,7 +760,7 @@ function settingsField(f) {
     return box;
   };
   switch (f.type) {
-    case 'bool': el = input('checkbox'); el.checked = v !== false; break;
+    case 'bool': el = input('checkbox'); el.checked = f.def === false ? v === true : v !== false; break;
     case 'number': el = input('number', v || f.def); el.step = f.step || 1; el.min = 0; break;
     case 'time': el = input('time', v || f.def); break;
     case 'secret': el = input('password', v, f.placeholder); el.autocomplete = 'off'; break;
@@ -814,10 +818,33 @@ $('#setSave').onclick = async () => {
     cfg = await api('GET', '/api/config');
     applyWorkday(cfg.workday);
     render(); loadActivity();
-    $('#footer').textContent = `File: ${cfg.file}` + (cfg.tempo ? ` · Tempo: ${cfg.jiraBase}` : ` · Tempo unavailable: ${cfg.tempoError}`);
+    renderFooter();
     toast('Settings saved, probes reloaded.');
   } catch (e) { toast('Not saved: ' + e.message, true); }
   finally { btn.disabled = false; }
+};
+
+// ---------- footer: file, Tempo, version and update ----------
+function renderFooter() {
+  $('#footer').textContent = `File: ${cfg.file}` + (cfg.tempo ? ` · Tempo: ${cfg.jiraBase}` : ` · Tempo unavailable: ${cfg.tempoError}`);
+  const u = cfg.update || {};
+  $('#version').textContent = cfg.version ? `· ${cfg.version}` + (u.dev ? ' (dev)' : '') : '';
+  const b = $('#updBtn');
+  b.hidden = !u.latest;
+  b.disabled = !!u.installing;
+  b.textContent = u.installing ? `Installing ${u.latest}…` : `⬆ Update to ${u.latest}`;
+}
+$('#updBtn').onclick = async () => {
+  const from = cfg.version;
+  try { cfg.update = await api('POST', '/api/update/install'); renderFooter(); }
+  catch (e) { return toast('Update: ' + e.message, true); }
+  toast('Downloading and installing – baca will restart.');
+  // after the restart the server answers with the new version
+  for (let i = 0; i < 90; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try { const c = await api('GET', '/api/config'); if (c.version !== from) { location.reload(); return; } cfg.update = c.update; renderFooter(); if (!c.update?.installing && c.update?.latest) break; } catch { /* restart */ }
+  }
+  toast('The update did not finish – see the logs in ~/.local/state/baca', true);
 };
 
 // ---------- bar 2: totals, ascending ----------
@@ -1162,6 +1189,7 @@ addEventListener('focus', async () => {
     if (v.hash !== hash && !dirty && !saving) { fromView(v); history = []; future = []; render(); toast('Loaded changes from the file.'); }
     refreshDays();
     loadActivity();
+    api('GET', '/api/config').then(c => { cfg = c; renderFooter(); }).catch(() => {});
   } catch { /* offline */ }
 });
 addEventListener('beforeunload', e => { if (dirty || saving) { flush(); e.preventDefault(); } });
@@ -1183,13 +1211,19 @@ addEventListener('resize', () => { renderTimeline(); renderSum(); });
     cfg = await api('GET', '/api/config');
     applyWorkday(cfg.workday);
     render();
-    $('#footer').textContent = `File: ${cfg.file}` + (cfg.tempo ? ` · Tempo: ${cfg.jiraBase}` : ` · Tempo unavailable: ${cfg.tempoError}`);
+    renderFooter();
   } catch {
-    toast('No server. Run: go run . -open (in the baca directory)', true);
+    toast('No server. Run: baca (or go run . serve in the project directory)', true);
     return;
   }
   await Promise.all([loadDay(day), refreshDays()]);
+  openFromHash();
 })();
+// the tray menu opens the page with #settings
+function openFromHash() {
+  if (location.hash === '#settings' && cfg.settings) { history.replaceState(null, '', location.pathname); openSettings(); }
+}
+addEventListener('hashchange', openFromHash);
 </script>
 </body>
 </html>
