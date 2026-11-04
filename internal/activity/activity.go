@@ -18,6 +18,7 @@ import (
 //   - idle: no input for a while (App is what was in front)
 //   - repo: the git repo Repo (on Branch) changed during the span
 //   - claude: a Claude Code session in Repo wrote during the span
+//   - agent: another coding agent (App: Codex, ...) worked in Repo
 type Span struct {
 	Date   string `json:"date,omitempty"`  // only in memory; the file name holds the day
 	Probe  string `json:"probe,omitempty"` // which probe wrote it
@@ -50,6 +51,7 @@ type Config struct {
 	System  SystemConfig `json:"system"`
 	Git     GitConfig    `json:"git"`
 	Claude  ClaudeConfig `json:"claude"`
+	Codex   CodexConfig  `json:"codex"`
 }
 
 type SystemConfig struct {
@@ -100,6 +102,9 @@ func (c Config) Probes() []Probe {
 	}
 	if on(c.Claude.Enabled) {
 		out = append(out, NewClaudeProbe(c.Git))
+	}
+	if on(c.Codex.Enabled) {
+		out = append(out, NewCodexProbe(c.Git))
 	}
 	return out
 }

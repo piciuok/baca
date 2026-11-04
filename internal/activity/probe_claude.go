@@ -62,7 +62,7 @@ func (p *ClaudeProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 				name = filepath.Base(r)
 				_, branch = GitInfo(r)
 			}
-			out = append(out, Span{Date: dayOf(now), From: clock(dayFloor(since, now)), To: clock(now), Kind: "claude", Repo: name, Branch: branch})
+			out = append(out, Span{Date: dayOf(now), From: clock(dayFloor(since, now)), To: clock(now), Kind: "agent", App: "Claude Code", Repo: name, Branch: branch})
 		}
 		p.seen[d] = mark
 	}

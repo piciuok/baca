@@ -115,12 +115,12 @@ func Analyze(spans []Span, known map[string]bool) Day {
 		switch s.Kind {
 		case "window":
 			tickets, from = Tickets(s.Title, false, known), "window title"
-		case "repo", "claude":
+		case "repo", "agent":
 			tickets = Tickets(s.Branch, true, known)
 			if s.Kind == "repo" {
 				from = "changes in " + s.Repo
 			} else {
-				from = "Claude w " + s.Repo
+				from = s.App + " in " + s.Repo
 			}
 			if s.Branch != "" {
 				from += " (" + s.Branch + ")"
@@ -139,7 +139,7 @@ func Analyze(spans []Span, known map[string]bool) Day {
 				if s.Title != "" {
 					add(&titles, i, s.App+" · "+s.Title, ov)
 				}
-			case "repo", "claude":
+			case "repo", "agent":
 				code[i] = true
 				ov *= 2
 			}

@@ -44,6 +44,7 @@ The server runs probes that record what happened during the day (`-collect=false
 | `system` | the app in front, its window title, idle time (macOS: `lsappinfo`, `osascript`, `ioreg`; Linux X11: `xdotool`, `xprintidle`) | 5 s |
 | `git` | repositories from `activity.git.repos` whose git state changed (index, HEAD, reflog), with the branch | 1 min |
 | `claude` | Claude Code sessions that wrote in that time, mapped to a watched repo | 1 min |
+| `codex` | Codex sessions (`~/.codex/sessions`), the session's working directory, the branch of its repo | 1 min |
 
 - Window titles on macOS need the Accessibility permission for the app baca was started from. Without it only the app name is recorded. Apps in `activity.system.ignoreApps` (password managers by default) never get their titles recorded.
 - Idle time longer than `idleAfterSeconds` (180) reaches back to the last mouse or keyboard input.
@@ -56,6 +57,7 @@ Configuration (the `activity` section of `config.json`, all optional):
   "dir": "~/.local/share/baca/activity",
   "system": { "intervalSeconds": 5, "idleAfterSeconds": 180, "ignoreApps": ["1Password"] },
   "git": { "repos": ["~/Projects/*"] },
-  "claude": { "enabled": true }
+  "claude": { "enabled": true },
+  "codex": { "enabled": true }
 }
 ```

@@ -145,3 +145,30 @@ func TestGitProbe(t *testing.T) {
 		t.Fatalf("worktree branch %q", b)
 	}
 }
+
+func TestCodexProbe(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repos", "app")
+	os.MkdirAll(filepath.Join(repo, ".git"), 0o755)
+	os.WriteFile(filepath.Join(repo, ".git", "HEAD"), []byte("ref: refs/heads/ABC-9-fix\n"), 0o644)
+	p := NewCodexProbe(GitConfig{Repos: []string{filepath.Join(root, "repos", "*")}})
+	p.root = filepath.Join(root, "sessions")
+	now := time.Date(2026, 11, 4, 9, 0, 0, 0, time.Local)
+	dir := filepath.Join(p.root, "2026", "11", "04")
+	os.MkdirAll(dir, 0o755)
+	if _, err := p.Tick(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	meta := `{"type":"session_meta","payload":{"cwd":"` + filepath.Join(repo, "sub") + `","base_instructions":{"text":"` + strings.Repeat("x", 100000) + `"}}}` + "\n"
+	os.WriteFile(filepath.Join(dir, "rollout-1.jsonl"), []byte(meta), 0o644)
+	later := time.Now().Add(time.Second)
+	os.Chtimes(filepath.Join(dir, "rollout-1.jsonl"), later, later)
+	p.last = later.Add(-time.Minute) // the file is newer than the previous scan
+	out, _ := p.Tick(context.Background(), now.Add(time.Minute))
+	if len(out) != 1 || out[0].Kind != "agent" || out[0].App != "Codex" || out[0].Repo != "app" || out[0].Branch != "ABC-9-fix" {
+		t.Fatalf("%+v", out)
+	}
+	if out2, _ := p.Tick(context.Background(), now.Add(2*time.Minute)); len(out2) != 0 {
+		t.Fatalf("unchanged session reported again: %+v", out2)
+	}
+}
