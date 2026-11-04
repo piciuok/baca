@@ -72,6 +72,18 @@ body.resizing, body.resizing *{cursor:ew-resize !important}
 .tip.multi{white-space:pre-wrap;max-width:min(680px,92vw);padding:8px 10px;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;box-shadow:0 6px 24px rgba(0,0,0,.5)}
 .tip.multi b{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;font-size:13px}
 
+/* ---------- activity bar ---------- */
+.actbar{position:relative;height:44px;background:var(--panel);border:1px solid var(--line);border-radius:6px;margin-top:6px;overflow:hidden}
+.app{position:absolute;top:4px;height:8px;border-radius:2px;opacity:.85}
+.app.idle{background:repeating-linear-gradient(135deg,#3a3f48 0 3px,transparent 3px 6px) !important;opacity:1}
+.sug{position:absolute;top:16px;bottom:4px;border:1px dashed;border-radius:4px;padding:2px 6px;font-size:11px;font-weight:600;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;cursor:copy;background:rgba(255,255,255,.04)}
+.sug:hover{background:rgba(255,255,255,.12)}
+.sug.taken{opacity:.25;cursor:default}
+.actinfo{display:flex;gap:10px;align-items:center;font-size:12px;margin-top:3px;min-height:22px}
+.actinfo .probe.err{color:var(--yellow)}
+.actinfo button{font-size:12px;padding:1px 8px}
+
 /* ---------- bar 2: totals ---------- */
 .sumbar{position:relative;height:84px;background:var(--panel);border:1px solid var(--line);border-radius:6px;margin-top:10px;overflow:hidden}
 .seg{position:absolute;top:6px;bottom:6px;padding:4px 7px;font-size:12px;font-weight:600;color:#0d0f12;white-space:nowrap;overflow:hidden;
@@ -134,6 +146,9 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
 
 <div class="track" id="track"><div class="grid" id="grid"></div></div>
 <div class="ruler" id="ruler"></div>
+
+<div class="actbar" id="actbar"></div>
+<div class="actinfo muted"><span>Activity</span><button id="actAll" hidden>Accept all suggestions</button><span id="actProbes"></span></div>
 
 <div class="sumbar" id="sumbar"></div>
 <div class="ruler" id="sumruler"></div>
@@ -261,11 +276,12 @@ async function loadDay(d) {
     if (seq !== loadSeq) return;
     day = d; fromView(v); history = []; future = []; selId = null;
     render();
+    loadActivity();
   } catch (e) { toast('Cannot load the day: ' + e.message, true); }
 }
 async function setDay(d) {
   await flush();
-  day = d; blocks = []; hash = ''; selId = null; render();
+  day = d; blocks = []; hash = ''; selId = null; act = null; render();
   await loadDay(d);
 }
 
@@ -519,6 +535,100 @@ sumbar.addEventListener('pointermove', e => {
   placeTip(e.clientX, $('#sumruler').getBoundingClientRect().bottom + 6);
 });
 sumbar.addEventListener('pointerleave', () => { $('#tip').style.display = 'none'; });
+
+// ---------- activity bar: what was on screen and blocks suggested by the probes ----------
+let act = null;
+const actbar = $('#actbar');
+async function loadActivity() {
+  const d = day;
+  try { const a = await api('GET', `/api/activity/${d}`); if (d === day) act = a; }
+  catch { if (d === day) act = null; }
+  renderActivity();
+}
+// parts of [s, e) free of blocks, at least MIN_LEN long
+function freeParts(s, e) {
+  let parts = [[s, e]];
+  for (const b of blocks) parts = parts.flatMap(([a, z]) => b.end <= a || b.start >= z ? [[a, z]] : [[a, b.start], [b.end, z]]);
+  return parts.map(([a, z]) => [clamp(a, AXIS_START, AXIS_END), clamp(z, AXIS_START, AXIS_END)]).filter(([a, z]) => z - a >= MIN_LEN);
+}
+function renderActivity() {
+  actbar.innerHTML = '';
+  const dayAct = act?.day;
+  for (const a of dayAct?.apps || []) {
+    const s = a.start / 60, e = a.end / 60;
+    if (e <= AXIS_START || s >= AXIS_END) continue;
+    const el = document.createElement('div');
+    el.className = 'app' + (a.idle ? ' idle' : '');
+    el.style.left = pct(Math.max(s, AXIS_START)) + '%';
+    el.style.width = Math.max(0.15, pct(Math.min(e, AXIS_END)) - pct(Math.max(s, AXIS_START))) + '%';
+    el.style.background = colorOf(a.app);
+    el.dataset.tip = `${a.idle ? 'idle · ' : ''}${a.app}  ${fmt(Math.floor(s))} – ${fmt(Math.floor(e))} (${dur(Math.round(e - s))})`;
+    actbar.appendChild(el);
+  }
+  let open = 0;
+  (dayAct?.suggestions || []).forEach((g, i) => {
+    if (g.end <= AXIS_START || g.start >= AXIS_END) return;
+    const free = freeParts(g.start, g.end);
+    if (free.length) open++;
+    const el = document.createElement('div');
+    el.className = 'sug' + (free.length ? '' : ' taken');
+    el.dataset.i = i;
+    el.style.left = pct(Math.max(g.start, AXIS_START)) + '%';
+    el.style.width = (pct(Math.min(g.end, AXIS_END)) - pct(Math.max(g.start, AXIS_START))) + '%';
+    el.style.borderColor = el.style.color = g.ticket ? colorOf(g.ticket) : 'var(--muted)';
+    el.textContent = g.ticket || '?';
+    actbar.appendChild(el);
+  });
+  $('#actAll').hidden = !open;
+  const probes = act?.probes || [];
+  const pr = $('#actProbes'); pr.innerHTML = '';
+  if (!act) pr.textContent = '· no data';
+  else if (!probes.length) pr.textContent = '· probes off';
+  for (const p of probes) {
+    const sp = document.createElement('span');
+    sp.className = 'probe' + (p.error ? ' err' : '');
+    sp.textContent = `· ${p.name}${p.info ? ': ' + p.info : ''}${p.error ? ' ⚠' : ''}`;
+    if (p.error) sp.title = p.error;
+    pr.appendChild(sp); pr.append(' ');
+  }
+}
+function acceptSuggestions(list) {
+  const add = [];
+  for (const g of list) for (const [a, z] of freeParts(g.start, g.end)) {
+    if (add.some(x => x.start < z && x.end > a)) continue;
+    add.push({ id: uid(), start: a, end: z, ticket: g.ticket || '', desc: '', logged: false });
+  }
+  if (!add.length) return;
+  snapshot();
+  blocks.push(...add);
+  blocks.sort((x, y) => x.start - y.start);
+  selId = add[0].id; formFor = undefined;
+  changed(); render();
+  if (add.length === 1 && !add[0].ticket) $('#fTicket').focus();
+}
+actbar.addEventListener('click', e => {
+  const el = e.target.closest('.sug:not(.taken)');
+  if (el) acceptSuggestions([act.day.suggestions[+el.dataset.i]]);
+});
+$('#actAll').onclick = () => acceptSuggestions(act?.day?.suggestions || []);
+actbar.addEventListener('pointermove', e => {
+  const tip = $('#tip');
+  const sug = e.target.closest('.sug'), app = e.target.closest('.app');
+  if (sug) {
+    const g = act.day.suggestions[+sug.dataset.i];
+    tip.className = 'tip multi'; tip.innerHTML = '';
+    const h = document.createElement('b');
+    h.textContent = `${g.ticket || 'no ticket'} · ${fmt(g.start)} – ${fmt(g.end)} (${dur(g.end - g.start)})` + (sug.classList.contains('taken') ? ' · taken' : ' · click to add');
+    const lines = [];
+    if (g.sources.length) lines.push('from: ' + g.sources.join(', '));
+    if (g.apps.length) lines.push('apps: ' + g.apps.map(a => `${a.name} ${a.minutes}m`).join(', '));
+    for (const t of g.titles) lines.push(`  ${t.minutes}m  ${t.name}`);
+    tip.append(h, '\n' + lines.join('\n'));
+  } else if (app) { tip.className = 'tip'; tip.textContent = app.dataset.tip; }
+  else { tip.style.display = 'none'; return; }
+  placeTip(e.clientX, actbar.getBoundingClientRect().bottom + 6);
+});
+actbar.addEventListener('pointerleave', () => { $('#tip').style.display = 'none'; });
 
 // ---------- bar 2: totals, ascending ----------
 function aggregate() {
@@ -861,6 +971,7 @@ addEventListener('focus', async () => {
     const v = await api('GET', `/api/days/${day}`);
     if (v.hash !== hash && !dirty && !saving) { fromView(v); history = []; future = []; render(); toast('Loaded changes from the file.'); }
     refreshDays();
+    loadActivity();
   } catch { /* offline */ }
 });
 addEventListener('beforeunload', e => { if (dirty || saving) { flush(); e.preventDefault(); } });
@@ -870,9 +981,10 @@ function render() {
   const tw = $('#tempoWeek');
   tw.hidden = !cfg.jiraBase;
   if (cfg.jiraBase) tw.href = tempoWeekHref(day);
-  renderDays(); renderTimeline(); renderSum(); renderForm(); renderOutput();
+  renderDays(); renderTimeline(); renderActivity(); renderSum(); renderForm(); renderOutput();
 }
 setInterval(renderTimeline, 60 * 1000);
+setInterval(() => { if (!drag && day === iso(new Date())) loadActivity(); }, 60 * 1000);
 addEventListener('resize', () => { renderTimeline(); renderSum(); });
 
 (async () => {
