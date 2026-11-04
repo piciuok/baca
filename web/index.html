@@ -576,7 +576,7 @@ function renderActivity() {
     el.style.left = pct(Math.max(g.start, AXIS_START)) + '%';
     el.style.width = (pct(Math.min(g.end, AXIS_END)) - pct(Math.max(g.start, AXIS_START))) + '%';
     el.style.borderColor = el.style.color = g.ticket ? colorOf(g.ticket) : 'var(--muted)';
-    el.textContent = g.ticket || '?';
+    el.textContent = g.ticket || (g.meeting ? '📞 ' + g.meeting.replace(/^[^·]*· /, '') : '?');
     actbar.appendChild(el);
   });
   $('#actAll').hidden = !open;
@@ -596,7 +596,7 @@ function acceptSuggestions(list) {
   const add = [];
   for (const g of list) for (const [a, z] of freeParts(g.start, g.end)) {
     if (add.some(x => x.start < z && x.end > a)) continue;
-    add.push({ id: uid(), start: a, end: z, ticket: g.ticket || '', desc: '', logged: false });
+    add.push({ id: uid(), start: a, end: z, ticket: g.ticket || '', desc: g.meeting ? g.meeting.replace(/^[^·]*· /, '') : '', logged: false });
   }
   if (!add.length) return;
   snapshot();
@@ -618,7 +618,7 @@ actbar.addEventListener('pointermove', e => {
     const g = act.day.suggestions[+sug.dataset.i];
     tip.className = 'tip multi'; tip.innerHTML = '';
     const h = document.createElement('b');
-    h.textContent = `${g.ticket || 'no ticket'} · ${fmt(g.start)} – ${fmt(g.end)} (${dur(g.end - g.start)})` + (sug.classList.contains('taken') ? ' · taken' : ' · click to add');
+    h.textContent = `${g.ticket || (g.meeting ? '📞 ' + g.meeting : 'no ticket')} · ${fmt(g.start)} – ${fmt(g.end)} (${dur(g.end - g.start)})` + (sug.classList.contains('taken') ? ' · taken' : ' · click to add');
     const lines = [];
     if (g.sources.length) lines.push('from: ' + g.sources.join(', '));
     if (g.apps.length) lines.push('apps: ' + g.apps.map(a => `${a.name} ${a.minutes}m`).join(', '));

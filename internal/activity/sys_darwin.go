@@ -54,3 +54,33 @@ func probe(ctx context.Context, wantTitle bool) (sample, error) {
 	}
 	return s, nil
 }
+
+// windows lists "app<TAB>title" of every window of the given running apps (needs Accessibility).
+func windows(ctx context.Context, apps []string) ([][2]string, error) {
+	if len(apps) == 0 {
+		return nil, nil
+	}
+	quoted := make([]string, len(apps))
+	for i, a := range apps {
+		quoted[i] = `"` + strings.ReplaceAll(a, `"`, ``) + `"`
+	}
+	script := `set AppleScript's text item delimiters to linefeed
+tell application "System Events"
+set out to {}
+repeat with pn in {` + strings.Join(quoted, ", ") + `}
+if exists process pn then
+try
+repeat with w in (get name of every window of process pn)
+set end of out to (pn as text) & tab & w
+end repeat
+end try
+end if
+end repeat
+end tell
+return out as text`
+	out, err := run(ctx, "osascript", "-e", script)
+	if err != nil {
+		return nil, err
+	}
+	return splitWindows(out), nil
+}

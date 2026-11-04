@@ -77,7 +77,7 @@ func hm(m int) string { return time.Date(0, 1, 1, m/60, m%60, 0, 0, time.UTC).Fo
 
 // fake clock + sampler: window, no input for 5 minutes, then back
 func TestSystemProbe(t *testing.T) {
-	p := NewSystemProbe(SystemConfig{Interval: 5, IdleAfter: 180})
+	p := NewSystemProbe(SystemConfig{Interval: 5, IdleAfter: 180}, GitConfig{})
 	c := NewCollector(Log{Dir: t.TempDir()}, p)
 	now := time.Date(2026, 11, 4, 9, 0, 0, 0, time.Local)
 	c.Now = func() time.Time { return now }
@@ -170,5 +170,64 @@ func TestCodexProbe(t *testing.T) {
 	}
 	if out2, _ := p.Tick(context.Background(), now.Add(2*time.Minute)); len(out2) != 0 {
 		t.Fatalf("unchanged session reported again: %+v", out2)
+	}
+}
+
+func TestContainsWord(t *testing.T) {
+	for _, c := range []struct {
+		s, w string
+		want bool
+	}{{"app – src/a.go", "app", true}, {"a.go — app", "app", true}, {"app-admin – x", "app", false}, {"my-app – x", "app", false}, {"app-admin – x", "app-admin", true}} {
+		if containsWord(c.s, c.w) != c.want {
+			t.Fatalf("%q in %q", c.w, c.s)
+		}
+	}
+}
+
+func TestSystemProbeIDEAndMeeting(t *testing.T) {
+	root := t.TempDir()
+	for _, r := range []string{"app", "app-admin"} {
+		os.MkdirAll(filepath.Join(root, r, ".git"), 0o755)
+		os.WriteFile(filepath.Join(root, r, ".git", "HEAD"), []byte("ref: refs/heads/feature/ABC-"+map[string]string{"app": "1", "app-admin": "2"}[r]+"\n"), 0o644)
+	}
+	p := NewSystemProbe(SystemConfig{Interval: 5, IdleAfter: 180, Meetings: map[string]string{"Slack": `(?i)huddle`}}, GitConfig{Repos: []string{filepath.Join(root, "*")}})
+	c := NewCollector(Log{Dir: t.TempDir()}, p)
+	now := time.Date(2026, 11, 4, 10, 0, 0, 0, time.Local)
+	c.Now = func() time.Time { return now }
+	title, idle, huddle := "app-admin – src/Export.php", time.Duration(0), false
+	p.sample = func(context.Context, bool) (sample, error) { return sample{App: "PhpStorm", Title: title, Idle: idle}, nil }
+	p.windows = func(context.Context, []string) ([][2]string, error) {
+		if huddle {
+			return [][2]string{{"Slack", "Huddle: #team"}}, nil
+		}
+		return [][2]string{{"Slack", "general (Channel) - Acme - Slack"}}, nil
+	}
+	step := func(n int) {
+		for range n {
+			c.tick(context.Background(), p)
+			now = now.Add(5 * time.Second)
+			if idle > 0 {
+				idle += 5 * time.Second
+			}
+		}
+	}
+	step(120) // 10:00-10:10 in the IDE on app-admin
+	huddle, idle = true, 5*time.Second
+	step(240) // 10:10-10:30 on a call, no input
+	huddle, idle = false, 0
+	step(60)
+	c.write(p, p.Flush(now))
+	spans, _ := c.Log.Read("2026-11-04")
+	d := Analyze(spans, map[string]bool{"ABC": true})
+	var got []string
+	for _, s := range d.Suggestions {
+		got = append(got, s.Ticket+"|"+s.Meeting+"@"+hm(s.Start)+"-"+hm(s.End))
+	}
+	want := "ABC-2|@10:00-10:10 |Slack · Huddle: #team@10:10-10:30 ABC-2|@10:30-10:35"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("got  %v\nwant %s", got, want)
+	}
+	if !strings.HasPrefix(d.Suggestions[0].Sources[0], "PhpStorm in app-admin (feature/ABC-2)") {
+		t.Fatalf("sources %v", d.Suggestions[0].Sources)
 	}
 }

@@ -41,13 +41,14 @@ The server runs probes that record what happened during the day (`-collect=false
 
 | probe | what it records | how often |
 |---|---|---|
-| `system` | the app in front, its window title, idle time (macOS: `lsappinfo`, `osascript`, `ioreg`; Linux X11: `xdotool`, `xprintidle`) | 5 s |
+| `system` | the app in front, its window title, idle time (macOS: `lsappinfo`, `osascript`, `ioreg`; Linux X11: `xdotool`, `xprintidle`, `wmctrl`). An IDE title naming a watched repo (JetBrains `repo – file`, VS Code `file — repo`) gets the repo and its branch. An open call window (Slack huddle, Zoom, Teams) is recorded as a meeting | 5 s, call windows every 30 s |
 | `git` | repositories from `activity.git.repos` whose git state changed (index, HEAD, reflog), with the branch | 1 min |
 | `claude` | Claude Code sessions that wrote in that time, mapped to a watched repo | 1 min |
 | `codex` | Codex sessions (`~/.codex/sessions`), the session's working directory, the branch of its repo | 1 min |
 
 - Window titles on macOS need the Accessibility permission for the app baca was started from. Without it only the app name is recorded. Apps in `activity.system.ignoreApps` (password managers by default) never get their titles recorded.
 - Idle time longer than `idleAfterSeconds` (180) reaches back to the last mouse or keyboard input.
+- Meetings are found by a window title pattern per app (`activity.system.meetings`; defaults for Slack `huddle|rozmowa`, `zoom.us`, `Microsoft Teams`, Polish titles included). A step where a call takes more than half of the time becomes its own “📞 …” suggestion with the call title as the description, even without mouse input.
 - Suggestions use 5-minute steps. A step is active with at least 2 minutes at the computer or activity in a repo or Claude. The ticket comes from window titles (seconds) or from the branch of an active repo (weight ×2). Only ticket prefixes already used in the worklog count. A step without evidence continues the previous ticket.
 
 Configuration (the `activity` section of `config.json`, all optional):

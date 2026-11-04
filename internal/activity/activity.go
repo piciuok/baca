@@ -16,6 +16,7 @@ import (
 // Span is a stretch of time with one state. Kinds:
 //   - window: App/Title in front, user active
 //   - idle: no input for a while (App is what was in front)
+//   - meeting: a call window of App titled Title was open (Slack huddle, Zoom, Teams)
 //   - repo: the git repo Repo (on Branch) changed during the span
 //   - claude: a Claude Code session in Repo wrote during the span
 //   - agent: another coding agent (App: Codex, ...) worked in Repo
@@ -59,6 +60,9 @@ type SystemConfig struct {
 	Interval   int      `json:"intervalSeconds"`  // default 5
 	IdleAfter  int      `json:"idleAfterSeconds"` // default 180
 	IgnoreApps []string `json:"ignoreApps"`       // their window titles are never stored
+	// Meetings: app -> regexp of a window title that means a call is on (Slack huddle, Zoom, Teams).
+	// During a call no input is normal, so it counts as work, not idle.
+	Meetings map[string]string `json:"meetings"`
 }
 
 type GitConfig struct {
@@ -86,6 +90,13 @@ func (c *Config) Defaults(worklogFile string) {
 	if c.System.IgnoreApps == nil {
 		c.System.IgnoreApps = []string{"1Password", "Bitwarden", "KeePassXC", "Keychain Access", "Dostęp do pęku kluczy"}
 	}
+	if c.System.Meetings == nil {
+		c.System.Meetings = map[string]string{
+			"Slack":           `(?i)huddle|rozmowa`,
+			"zoom.us":         `(?i)zoom meeting|spotkanie|meeting`,
+			"Microsoft Teams": `(?i)meeting|spotkanie|call|połączenie|rozmowa`,
+		}
+	}
 }
 
 // Probes builds the enabled probes.
@@ -95,7 +106,7 @@ func (c Config) Probes() []Probe {
 	}
 	var out []Probe
 	if on(c.System.Enabled) {
-		out = append(out, NewSystemProbe(c.System))
+		out = append(out, NewSystemProbe(c.System, c.Git))
 	}
 	if on(c.Git.Enabled) && len(c.Git.Repos) > 0 {
 		out = append(out, NewGitProbe(c.Git))

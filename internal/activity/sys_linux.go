@@ -38,3 +38,25 @@ func probe(ctx context.Context, wantTitle bool) (sample, error) {
 	}
 	return s, nil
 }
+
+// windows lists "app<TAB>title" of the windows whose WM_CLASS matches one of apps (wmctrl).
+func windows(ctx context.Context, apps []string) ([][2]string, error) {
+	out, err := run(ctx, "wmctrl", "-lx")
+	if err != nil {
+		return nil, err
+	}
+	var res [][2]string
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 {
+			continue
+		}
+		class := strings.ToLower(f[2])
+		for _, a := range apps {
+			if strings.Contains(class, strings.ToLower(strings.ReplaceAll(a, " ", ""))) {
+				res = append(res, [2]string{a, strings.Join(f[4:], " ")})
+			}
+		}
+	}
+	return res, nil
+}
