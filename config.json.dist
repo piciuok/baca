@@ -12,6 +12,14 @@
       "repos": [
         "~/Projects/*"
       ]
+    },
+    "gitlab": {
+      "instances": [
+        {
+          "baseUrl": "https://gitlab.example.com",
+          "token": ""
+        }
+      ]
     }
   }
 }

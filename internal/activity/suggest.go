@@ -125,6 +125,9 @@ func Analyze(spans []Span, known map[string]bool) Day {
 			}
 		case "meeting":
 			from = s.App
+		case "remote":
+			tickets = append(Tickets(s.Title, false, known), Tickets(s.Branch, true, known)...)
+			from = s.App + " in " + s.Repo
 		case "repo", "agent":
 			tickets = Tickets(s.Branch, true, known)
 			if s.Kind == "repo" {
@@ -152,6 +155,10 @@ func Analyze(spans []Span, known map[string]bool) Day {
 			case "meeting":
 				code[i] = true
 				add(&meets, i, s.App+" · "+s.Title, ov)
+			case "remote":
+				code[i] = true
+				add(&titles, i, s.App+" · "+s.Title, ov)
+				ov *= 2
 			case "repo", "agent":
 				code[i] = true
 				ov *= 2

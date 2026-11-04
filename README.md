@@ -45,7 +45,9 @@ The server runs probes that record what happened during the day (`-collect=false
 | `git` | repositories from `activity.git.repos` whose git state changed (index, HEAD, reflog), with the branch | 1 min |
 | `claude` | Claude Code sessions that wrote in that time, mapped to a watched repo | 1 min |
 | `codex` | Codex sessions (`~/.codex/sessions`), the session's working directory, the branch of its repo | 1 min |
+| `gitlab` | your GitLab events (push, MR comment and approval, merge) of today and yesterday; the ticket comes from the MR title or the branch. Token from the config, `GITLAB_TOKEN` or `glab` | 5 min |
 
+- Remote probes (GitLab, …) fetch the whole day every few minutes and replace their own `YYYY-MM-DD.<probe>.jsonl`, so fetching again never duplicates. An event is a point in time, so its span reaches back by the usual length of the action (push 10 min, comment and approval 5 min).
 - Window titles on macOS need the Accessibility permission for the app baca was started from. Without it only the app name is recorded. Apps in `activity.system.ignoreApps` (password managers by default) never get their titles recorded.
 - Idle time longer than `idleAfterSeconds` (180) reaches back to the last mouse or keyboard input.
 - Meetings are found by a window title pattern per app (`activity.system.meetings`; defaults for Slack `huddle|rozmowa`, `zoom.us`, `Microsoft Teams`, Polish titles included). A step where a call takes more than half of the time becomes its own “📞 …” suggestion with the call title as the description, even without mouse input.
@@ -59,6 +61,7 @@ Configuration (the `activity` section of `config.json`, all optional):
   "system": { "intervalSeconds": 5, "idleAfterSeconds": 180, "ignoreApps": ["1Password"] },
   "git": { "repos": ["~/Projects/*"] },
   "claude": { "enabled": true },
-  "codex": { "enabled": true }
+  "codex": { "enabled": true },
+  "gitlab": { "instances": [{ "baseUrl": "https://gitlab.example.com", "token": "" }] }
 }
 ```

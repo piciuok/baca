@@ -19,7 +19,8 @@ import (
 //   - meeting: a call window of App titled Title was open (Slack huddle, Zoom, Teams)
 //   - repo: the git repo Repo (on Branch) changed during the span
 //   - claude: a Claude Code session in Repo wrote during the span
-//   - agent: another coding agent (App: Codex, ...) worked in Repo
+//   - agent: a coding agent (App: Claude Code, Codex) worked in Repo
+//   - remote: an action in a web service (App: GitLab, Jira, ...) at To; From is a short lead-in
 type Span struct {
 	Date   string `json:"date,omitempty"`  // only in memory; the file name holds the day
 	Probe  string `json:"probe,omitempty"` // which probe wrote it
@@ -53,6 +54,7 @@ type Config struct {
 	Git     GitConfig    `json:"git"`
 	Claude  ClaudeConfig `json:"claude"`
 	Codex   CodexConfig  `json:"codex"`
+	GitLab  GitLabConfig `json:"gitlab"`
 }
 
 type SystemConfig struct {
@@ -117,6 +119,9 @@ func (c Config) Probes() []Probe {
 	if on(c.Codex.Enabled) {
 		out = append(out, NewCodexProbe(c.Git))
 	}
+	if on(c.GitLab.Enabled) && len(c.GitLab.Instances) > 0 {
+		out = append(out, NewGitLabProbe(c.GitLab))
+	}
 	return out
 }
 
@@ -163,10 +168,72 @@ func (l Log) Append(spans ...Span) error {
 	return nil
 }
 
+// Snapshot is a probe that rebuilds whole days from a remote service on every tick; the
+// collector replaces the probe's file of each day in Days with what Tick returned.
+type Snapshot interface {
+	Days(now time.Time) []string
+}
+
+func (l Log) snapshotPath(date, probe string) string {
+	return filepath.Join(l.Dir, date+"."+probe+".jsonl")
+}
+
+// Replace atomically rewrites one probe's snapshot of a day.
+func (l Log) Replace(date, probe string, spans []Span) error {
+	if err := os.MkdirAll(l.Dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(l.Dir, "."+date+"."+probe+".*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	w := bufio.NewWriter(tmp)
+	for _, s := range spans {
+		s.Date = ""
+		b, _ := json.Marshal(s)
+		w.Write(b)
+		w.WriteByte('\n')
+	}
+	if err := w.Flush(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), l.snapshotPath(date, probe))
+}
+
 // Read returns the day's spans. Touching pieces of one state are merged (long spans are
 // written in one-minute pieces), and a window/idle span written later wins over the part of
 // earlier ones it overlaps (idle reaches back to the last input).
 func (l Log) Read(date string) ([]Span, error) {
+	out, err := l.readLocal(date)
+	if err != nil {
+		return nil, err
+	}
+	snaps, _ := filepath.Glob(filepath.Join(l.Dir, date+".*.jsonl"))
+	for _, p := range snaps {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			var s Span
+			if json.Unmarshal([]byte(line), &s) == nil && s.End() >= s.Start() {
+				out = append(out, s)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (l Log) readLocal(date string) ([]Span, error) {
 	f, err := os.Open(l.path(date))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil

@@ -89,7 +89,13 @@ func (c *Collector) loop(ctx context.Context, p Probe) {
 func (c *Collector) tick(ctx context.Context, p Probe) {
 	now := c.Now()
 	spans, err := p.Tick(ctx, now)
-	c.write(p, spans)
+	if sn, ok := p.(Snapshot); ok {
+		if err == nil { // a failed fetch keeps the last good snapshot
+			c.replace(p, sn.Days(now), spans)
+		}
+	} else {
+		c.write(p, spans)
+	}
 	c.mu.Lock()
 	st := c.status[p.Name()]
 	st.LastTick = clock(now)
@@ -98,6 +104,19 @@ func (c *Collector) tick(ctx context.Context, p Probe) {
 		st.Error = err.Error()
 	}
 	c.mu.Unlock()
+}
+
+func (c *Collector) replace(p Probe, days []string, spans []Span) {
+	byDay := map[string][]Span{}
+	for _, s := range spans {
+		s.Probe = p.Name()
+		byDay[s.Date] = append(byDay[s.Date], s)
+	}
+	for _, d := range days {
+		if err := c.Log.Replace(d, p.Name(), byDay[d]); err != nil {
+			log.Printf("activity %s: write: %v", p.Name(), err)
+		}
+	}
 }
 
 func (c *Collector) write(p Probe, spans []Span) {

@@ -2,6 +2,9 @@ package activity
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -229,5 +232,55 @@ func TestSystemProbeIDEAndMeeting(t *testing.T) {
 	}
 	if !strings.HasPrefix(d.Suggestions[0].Sources[0], "PhpStorm in app-admin (feature/ABC-2)") {
 		t.Fatalf("sources %v", d.Suggestions[0].Sources)
+	}
+}
+
+func TestGitLabProbe(t *testing.T) {
+	events := `[
+	 {"project_id":1,"action_name":"pushed to","created_at":"2026-11-04T08:30:00Z","push_data":{"ref":"feature/ABC-5-x","commit_title":"Fix totals"}},
+	 {"project_id":1,"action_name":"commented on","target_type":"DiffNote","target_title":"ABC-6 Export","created_at":"2026-11-04T09:00:00Z","note":{"noteable_type":"MergeRequest"}},
+	 {"project_id":2,"action_name":"approved","target_type":"MergeRequest","target_iid":7,"target_title":"ABC-7 Login","created_at":"2026-11-03T15:00:00Z"},
+	 {"project_id":2,"action_name":"approved","target_type":"MergeRequest","target_iid":1,"target_title":"old","created_at":"2026-11-01T15:00:00Z"}
+	]`
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("PRIVATE-TOKEN"))
+		switch r.URL.Path {
+		case "/api/v4/events":
+			if r.URL.Query().Get("after") != "2026-11-02" || r.URL.Query().Get("before") != "2026-11-05" {
+				t.Errorf("query %s", r.URL.RawQuery)
+			}
+			io.WriteString(w, events)
+		case "/api/v4/projects/1":
+			io.WriteString(w, `{"path":"app"}`)
+		case "/api/v4/projects/2":
+			io.WriteString(w, `{"path":"web"}`)
+		default:
+			http.Error(w, "nf", 404)
+		}
+	}))
+	defer srv.Close()
+	p := NewGitLabProbe(GitLabConfig{Instances: []GitLabInstance{{BaseURL: srv.URL, Token: "tok"}}})
+	c := NewCollector(Log{Dir: t.TempDir()}, p)
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).In(time.Local)
+	c.Now = func() time.Time { return now }
+	c.tick(context.Background(), p)
+	c.tick(context.Background(), p) // a second poll replaces, never duplicates
+	today, _ := c.Log.Read(dayOf(now))
+	yesterday, _ := c.Log.Read(dayOf(now.AddDate(0, 0, -1)))
+	if len(today) != 2 || len(yesterday) != 1 || auth[0] != "tok" {
+		t.Fatalf("today %+v\nyesterday %+v", today, yesterday)
+	}
+	push := today[0]
+	if push.Kind != "remote" || push.App != "GitLab" || push.Repo != "app" || push.Branch != "feature/ABC-5-x" ||
+		push.To != clock(time.Date(2026, 11, 4, 8, 30, 0, 0, time.UTC).In(time.Local)) || push.Probe != "gitlab" {
+		t.Fatalf("push %+v", push)
+	}
+	if today[1].Title != "commented on MR ABC-6 Export" || yesterday[0].Title != "approved MR !7 ABC-7 Login" {
+		t.Fatalf("titles %q %q", today[1].Title, yesterday[0].Title)
+	}
+	d := Analyze(today, map[string]bool{"ABC": true})
+	if len(d.Suggestions) != 2 || d.Suggestions[0].Ticket != "ABC-5" || d.Suggestions[1].Ticket != "ABC-6" {
+		t.Fatalf("suggestions %+v", d.Suggestions)
 	}
 }
