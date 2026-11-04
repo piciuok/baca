@@ -22,6 +22,9 @@ type fakeAtlassian struct {
 	created  []map[string]any
 	existing []map[string]any
 	failKey  string
+	updates  []map[string]any
+	deleted  []string
+	stored   map[string]map[string]any // tempoWorklogId -> last PUT body
 }
 
 func (f *fakeAtlassian) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +51,24 @@ func (f *fakeAtlassian) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&body)
 		f.created = append(f.created, body)
 		json.NewEncoder(w).Encode(map[string]any{"tempoWorklogId": 9000 + len(f.created)})
+	case r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/4/worklogs/"):
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		f.updates = append(f.updates, body)
+		if f.stored == nil {
+			f.stored = map[string]map[string]any{}
+		}
+		f.stored[strings.TrimPrefix(r.URL.Path, "/4/worklogs/")] = body
+	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/4/worklogs/"):
+		b := f.stored[strings.TrimPrefix(r.URL.Path, "/4/worklogs/")]
+		issue := b["issueId"]
+		if issue == nil {
+			issue = 101
+		}
+		json.NewEncoder(w).Encode(map[string]any{"issue": map[string]any{"id": issue}, "description": b["description"]})
+	case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/4/worklogs/"):
+		f.deleted = append(f.deleted, strings.TrimPrefix(r.URL.Path, "/4/worklogs/"))
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, 500)
 	}
@@ -162,5 +183,50 @@ func TestPutDayAndGuard(t *testing.T) {
 	call(t, srv, "GET", "/api/days", "", &days)
 	if len(days) != 1 || days[0].Status != "open" {
 		t.Fatalf("days: %+v", days)
+	}
+}
+
+func TestUpdateAndUnlog(t *testing.T) {
+	srv, fake, path := setup(t, "@Wtorek 03.11\n*[07:00 - 07:30] - ABC-1 - Review the import screen, fix the date parsing #~55~#\n[07:30 - 08:00] - ABC-2 - Work\n")
+	var day worklog.DayView
+	call(t, srv, "GET", "/api/days/2026-11-03", "", &day)
+	key := day.Entries[0].Key()
+
+	if code := call(t, srv, "POST", "/api/days/2026-11-03/logged/update", `{"hash":"stale","key":"`+key+`","ticket":"ABC-1","desc":"x"}`, nil); code != http.StatusConflict {
+		t.Fatalf("stale hash: %d", code)
+	}
+	if code := call(t, srv, "POST", "/api/days/2026-11-03/logged/update", `{"hash":"`+day.Hash+`","key":"`+day.Entries[1].Key()+`","ticket":"ABC-2","desc":"x"}`, nil); code != http.StatusNotFound {
+		t.Fatalf("open entry accepted: %d", code)
+	}
+	var out struct {
+		Day worklog.DayView `json:"day"`
+	}
+	body := `{"hash":"` + day.Hash + `","key":"` + key + `","ticket":"abc-1","desc":"Review the import screen,\n fix the date parsing, open PR"}`
+	if code := call(t, srv, "POST", "/api/days/2026-11-03/logged/update", body, &out); code != 200 {
+		t.Fatalf("update: %d", code)
+	}
+	if len(fake.updates) != 1 || fake.updates[0]["description"] != "Review the import screen, fix the date parsing, open PR" ||
+		fake.updates[0]["issueId"] != nil || fake.updates[0]["startTime"] != "07:00:00" || fake.updates[0]["timeSpentSeconds"] != float64(1800) {
+		t.Fatalf("PUT body = %+v", fake.updates)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), "*[07:00 - 07:30] - ABC-1 - Review the import screen, fix the date parsing, open PR #~55~#\n") {
+		t.Fatalf("file:\n%s", b)
+	}
+
+	// moving to another ticket sends issueId
+	body = `{"hash":"` + out.Day.Hash + `","key":"` + key + `","ticket":"ABC-2","desc":"Work"}`
+	if code := call(t, srv, "POST", "/api/days/2026-11-03/logged/update", body, &out); code != 200 || fake.updates[1]["issueId"] != float64(102) {
+		t.Fatalf("move: %d %+v", code, fake.updates)
+	}
+
+	// delete in Tempo turns the entry back into an open block
+	body = `{"hash":"` + out.Day.Hash + `","key":"` + out.Day.Entries[0].Key() + `"}`
+	if code := call(t, srv, "POST", "/api/days/2026-11-03/logged/delete", body, &out); code != 200 {
+		t.Fatalf("delete: %d", code)
+	}
+	b, _ = os.ReadFile(path)
+	if strings.Join(fake.deleted, ",") != "55" || string(b) != "@Wtorek 03.11\n[07:00 - 07:30] - ABC-2 - Work\n[07:30 - 08:00] - ABC-2 - Work\n" {
+		t.Fatalf("deleted %v file:\n%s", fake.deleted, b)
 	}
 }

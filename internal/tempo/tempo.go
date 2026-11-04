@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -161,11 +162,12 @@ func (c *Client) IssueID(ctx context.Context, key string) (string, error) {
 }
 
 type Worklog struct {
-	ID        string
-	IssueID   string
-	StartDate string // 2026-11-03
-	StartTime string // 07:00:00
-	Seconds   int
+	ID          string
+	IssueID     string
+	StartDate   string // 2026-11-03
+	StartTime   string // 07:00:00
+	Seconds     int
+	Description string
 }
 
 // flexID reads an id Tempo may send as a number or a string.
@@ -233,4 +235,51 @@ func (c *Client) Create(ctx context.Context, w NewWorklog) (string, error) {
 		return "", fmt.Errorf("Tempo returned no tempoWorklogId")
 	}
 	return string(res.ID), nil
+}
+
+// Get reads one worklog by its tempoWorklogId.
+func (c *Client) Get(ctx context.Context, id string) (Worklog, error) {
+	var r struct {
+		ID    flexID `json:"tempoWorklogId"`
+		Issue struct {
+			ID flexID `json:"id"`
+		} `json:"issue"`
+		StartDate   string `json:"startDate"`
+		StartTime   string `json:"startTime"`
+		Seconds     int    `json:"timeSpentSeconds"`
+		Description string `json:"description"`
+	}
+	if err := c.tempo(ctx, http.MethodGet, "/4/worklogs/"+url.PathEscape(id), nil, nil, &r); err != nil {
+		return Worklog{}, err
+	}
+	return Worklog{ID: string(r.ID), IssueID: string(r.Issue.ID), StartDate: r.StartDate, StartTime: r.StartTime, Seconds: r.Seconds, Description: r.Description}, nil
+}
+
+// Update overwrites a worklog. issueId is sent only when the worklog moves to another issue,
+// so a plain description fix never depends on Tempo accepting that field.
+func (c *Client) Update(ctx context.Context, id string, w NewWorklog, moveIssue bool) error {
+	body := map[string]any{
+		"authorAccountId":  w.AccountID,
+		"startDate":        w.Start.Format("2006-01-02"),
+		"startTime":        w.Start.Format("15:04:05"),
+		"timeSpentSeconds": w.Seconds,
+		"description":      w.Description,
+	}
+	if moveIssue {
+		body["issueId"] = w.IssueID
+		if n, err := strconv.Atoi(w.IssueID); err == nil {
+			body["issueId"] = n
+		}
+	}
+	return c.tempo(ctx, http.MethodPut, "/4/worklogs/"+url.PathEscape(id), nil, body, nil)
+}
+
+// Delete removes a worklog; one that is already gone counts as deleted.
+func (c *Client) Delete(ctx context.Context, id string) error {
+	err := c.tempo(ctx, http.MethodDelete, "/4/worklogs/"+url.PathEscape(id), nil, nil, nil)
+	var he *HTTPError
+	if errors.As(err, &he) && he.Status == http.StatusNotFound {
+		return nil
+	}
+	return err
 }

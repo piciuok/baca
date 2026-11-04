@@ -246,3 +246,47 @@ func (s *Store) Tickets() ([]string, error) {
 	})
 	return out, nil
 }
+
+// changeLogged applies fn to the logged entry with the given Key and writes the day back.
+func (s *Store) changeLogged(date time.Time, key string, fn func(*Entry)) (DayView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.read()
+	if err != nil {
+		return DayView{}, err
+	}
+	d := f.Day(date)
+	if d == nil {
+		return view(date, d), ErrNotFound
+	}
+	entries := append([]Entry(nil), d.Entries...)
+	found := false
+	for i := range entries {
+		if entries[i].Logged && entries[i].Key() == key {
+			fn(&entries[i])
+			found = true
+			break
+		}
+	}
+	if !found {
+		return view(date, d), fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	if err := Validate(entries); err != nil {
+		return view(date, d), err
+	}
+	nf := f.SetDay(date, entries, s.Now())
+	if err := s.write(nf); err != nil {
+		return DayView{}, err
+	}
+	return view(date, nf.Day(date)), nil
+}
+
+// UpdateLogged changes the ticket and description of a logged entry (after Tempo took the change).
+func (s *Store) UpdateLogged(date time.Time, key, ticket, desc string) (DayView, error) {
+	return s.changeLogged(date, key, func(e *Entry) { e.Ticket, e.Desc = ticket, desc })
+}
+
+// UnmarkLogged turns a logged entry back into an open one (after its worklog was deleted in Tempo).
+func (s *Store) UnmarkLogged(date time.Time, key string) (DayView, error) {
+	return s.changeLogged(date, key, func(e *Entry) { e.Logged, e.WorklogID = false, "" })
+}
