@@ -3,7 +3,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"baca/internal/activity"
+	"baca/internal/auth"
 	"baca/internal/config"
 	"baca/internal/describe"
 	"baca/internal/tempo"
@@ -39,6 +39,8 @@ type Server struct {
 	state      atomic.Pointer[State]
 	logMu      sync.Mutex
 	describeMu sync.Mutex
+	codesMu    sync.Mutex
+	usedCodes  map[string]time.Time
 }
 
 // State is what the settings can change while the server runs; it is swapped as a whole.
@@ -73,6 +75,7 @@ var ticketRE = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.index)
+	mux.HandleFunc("GET /api/hello", s.hello)
 	mux.HandleFunc("GET /favicon.png", s.favicon)
 	mux.HandleFunc("GET /favicon.ico", s.favicon)
 	mux.HandleFunc("GET /api/config", s.config)
@@ -96,10 +99,11 @@ func (s *Server) Handler() http.Handler {
 
 // guard keeps everything else away from the UI and the API:
 //   - the Host must be a loopback name (no DNS rebinding);
-//   - the page needs ?t=<token> and every API call the X-Baca-Token header, so other local
-//     users and processes cannot read the worklog or the activity (window titles); a custom
-//     header also means no cross-site request can reach the API (no CORS preflight passes);
-//   - the page is never framed and never leaks its URL (with the token) in a Referer.
+//   - the page is opened with a one-time code (?c=, see internal/auth) that is exchanged for an
+//     HttpOnly SameSite=Strict cookie, so the token never sits in a URL, the history or ps;
+//   - the API needs that cookie plus the X-Baca header (no other web page can send it), or the
+//     token itself in X-Baca-Token (tools);
+//   - the page is never framed and never sends a Referer.
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, _, err := net.SplitHostPort(r.Host)
@@ -112,23 +116,74 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		}
 		h := w.Header()
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Content-Type-Options", "nosniff")
-		if r.URL.Path == "/favicon.png" || r.URL.Path == "/favicon.ico" { // the logo is public
+		switch r.URL.Path {
+		case "/favicon.png", "/favicon.ico", "/api/hello": // the logo, and the proof of knowing the token
 			next.ServeHTTP(w, r)
 			return
 		}
-		token := r.Header.Get("X-Baca-Token")
-		if !strings.HasPrefix(r.URL.Path, "/api/") {
-			token = r.URL.Query().Get("t")
+		session := ""
+		if c, err := r.Cookie(auth.Cookie); err == nil {
+			session = c.Value
 		}
-		if s.Token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.Token)) != 1 {
-			http.Error(w, "missing or invalid token — open baca from the menu bar icon or run: baca open", http.StatusForbidden)
+		hasSession := auth.Equal(session, auth.Session(s.Token))
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			if code := r.URL.Query().Get("c"); code != "" {
+				if !s.useCode(code) {
+					http.Error(w, "this link has expired — open baca from the menu bar icon or run: baca open", http.StatusForbidden)
+					return
+				}
+				http.SetCookie(w, &http.Cookie{Name: auth.Cookie, Value: auth.Session(s.Token), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+				http.Redirect(w, r, "/", http.StatusSeeOther) // a clean URL; the #fragment is kept
+				return
+			}
+			if !hasSession {
+				http.Error(w, "open baca from the menu bar icon or run: baca open", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		if auth.Equal(r.Header.Get("X-Baca-Token"), s.Token) || (hasSession && r.Header.Get("X-Baca") == "1") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "missing or invalid session — reopen baca from the menu bar icon or run: baca open", http.StatusForbidden)
 	})
+}
+
+// useCode accepts an opening code once.
+func (s *Server) useCode(code string) bool {
+	if !auth.CheckCode(s.Token, code, time.Now()) {
+		return false
+	}
+	s.codesMu.Lock()
+	defer s.codesMu.Unlock()
+	if s.usedCodes == nil {
+		s.usedCodes = map[string]time.Time{}
+	}
+	for c, at := range s.usedCodes {
+		if time.Since(at) > auth.CodeTTL+time.Minute {
+			delete(s.usedCodes, c)
+		}
+	}
+	if _, used := s.usedCodes[code]; used {
+		return false
+	}
+	s.usedCodes[code] = time.Now()
+	return true
+}
+
+// hello proves to a client that this server knows the user's token (see auth.Verify).
+func (s *Server) hello(w http.ResponseWriter, r *http.Request) {
+	n := r.URL.Query().Get("n")
+	if len(n) < 16 || len(n) > 128 || s.Token == "" {
+		http.Error(w, "bad nonce", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"answer": auth.Answer(s.Token, n)})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

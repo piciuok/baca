@@ -22,7 +22,7 @@ type Today struct {
 }
 
 type Tray struct {
-	URL     string
+	Page    func() string // a fresh one-time address of the UI
 	Updates *update.Manager
 	Today   func() Today
 	OnExit  func()
@@ -107,9 +107,9 @@ func (t *Tray) onReady() {
 			case <-tick.C:
 				refresh()
 			case <-open.ClickedCh:
-				_ = platform.Open(t.URL)
+				_ = platform.Open(t.Page())
 			case <-settings.ClickedCh:
-				_ = platform.Open(t.URL + "#settings")
+				_ = platform.Open(t.Page() + "#settings")
 			case <-check.ClickedCh:
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

@@ -32,9 +32,9 @@ func TestPromptText(t *testing.T) {
 	for in, want := range map[string]string{
 		"  fix the  export\nplease ": "fix the export please",
 		"<command-name>/review-queue</command-name><command-args>12</command-args>": "/review-queue 12",
-		"<command-name>/clear</command-name>": "",
-		"<system-reminder>x</system-reminder>": "",
-		"Caveat: the messages below":            "",
+		"<command-name>/clear</command-name>":                                       "",
+		"<system-reminder>x</system-reminder>":                                      "",
+		"Caveat: the messages below":                                                "",
 	} {
 		if got := promptText(in); got != want {
 			t.Fatalf("%q: %q", in, got)

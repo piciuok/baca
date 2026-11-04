@@ -13,6 +13,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"baca/internal/auth"
 	"baca/internal/config"
 	"baca/internal/tempo"
 	"baca/internal/worklog"
@@ -198,9 +199,44 @@ func TestPutDayAndGuard(t *testing.T) {
 			t.Fatalf("%s: %d", p, res.StatusCode)
 		}
 	}
-	res, _ := http.Get(srv.URL + "/?t=tok")
-	if res.StatusCode != 200 || res.Header.Get("X-Frame-Options") != "DENY" || res.Header.Get("Referrer-Policy") != "no-referrer" {
-		t.Fatalf("page: %d %v", res.StatusCode, res.Header)
+	// the page: a one-time code becomes an HttpOnly cookie and a clean URL
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	page := auth.PageURL(srv.URL, "tok")
+	res, _ := noRedirect.Get(page + "#settings")
+	var cookie *http.Cookie
+	for _, c := range res.Cookies() {
+		cookie = c
+	}
+	if res.StatusCode != http.StatusSeeOther || res.Header.Get("Location") != "/" || cookie == nil || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("code: %d %v", res.StatusCode, res.Header)
+	}
+	if res, _ := noRedirect.Get(page); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("code used twice: %d", res.StatusCode)
+	}
+	if res, _ := noRedirect.Get(srv.URL + "/?t=tok"); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("token in the URL accepted: %d", res.StatusCode)
+	}
+	get := func(path string, header bool) *http.Response {
+		req, _ := http.NewRequest("GET", srv.URL+path, nil)
+		req.AddCookie(cookie)
+		if header {
+			req.Header.Set("X-Baca", "1")
+		}
+		res, _ := http.DefaultClient.Do(req)
+		return res
+	}
+	if res := get("/", false); res.StatusCode != 200 || res.Header.Get("X-Frame-Options") != "DENY" || res.Header.Get("Referrer-Policy") != "no-referrer" {
+		t.Fatalf("page with cookie: %d", res.StatusCode)
+	}
+	if get("/api/days", true).StatusCode != 200 || get("/api/days", false).StatusCode != http.StatusForbidden {
+		t.Fatal("api: cookie needs the X-Baca header")
+	}
+	// the hello proof needs no auth and only answers for the token
+	res, _ = http.Get(srv.URL + "/api/hello?n=0123456789abcdef")
+	var hello struct{ Answer string }
+	json.NewDecoder(res.Body).Decode(&hello)
+	if hello.Answer != auth.Answer("tok", "0123456789abcdef") {
+		t.Fatalf("hello %+v", hello)
 	}
 	var days []worklog.DaySummary
 	call(t, srv, "GET", "/api/days", "", &days)

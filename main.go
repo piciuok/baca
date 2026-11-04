@@ -17,9 +17,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"baca/internal/auth"
 	"baca/internal/config"
 	"baca/internal/platform"
 	"baca/internal/server"
@@ -180,12 +182,16 @@ func cmdRun(args []string, withTray bool) error {
 		return err
 	}
 	url := "http://" + *addr
-	page := url + "/?t=" + token
+	page := func() string { return auth.PageURL(url, token) }
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		if withTray && errors.Is(err, syscall.EADDRINUSE) {
-			// already running: show it instead of starting a second copy
-			_ = platform.Open(page)
+			// already running: show it instead of starting a second copy - but only when it is
+			// baca, so a program squatting the port never gets an opening code
+			if err := auth.Verify(context.Background(), url, token); err != nil {
+				return fmt.Errorf("%s: %w", *addr, err)
+			}
+			_ = platform.Open(page())
 			return nil
 		}
 		return err
@@ -208,18 +214,21 @@ func cmdRun(args []string, withTray bool) error {
 
 	log.Printf("baca %s: %s  file: %s  config: %s", version, url, a.srv.Store.FilePath(), path)
 	if *open {
-		_ = platform.Open(page)
+		_ = platform.Open(page())
 	}
 	srv := &http.Server{Handler: a.srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 	go upd.Loop(ctx, 6*time.Hour, func() bool { return a.Get().Updates.CheckOn() })
 
+	var once sync.Once
 	shutdown := func() {
-		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		srv.Shutdown(sctx)
-		a.stopCollector() // the open activity span is written before exit
+		once.Do(func() {
+			sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			srv.Shutdown(sctx)
+			a.stopCollector() // the open activity span is written before exit
+		})
 	}
 
 	if !withTray {
@@ -256,7 +265,8 @@ func cmdRun(args []string, withTray bool) error {
 		}
 		tray.Quit()
 	}()
-	t := &tray.Tray{URL: page, Updates: upd, Today: a.today}
+	// OnExit: a logout on macOS ends the app from inside the tray loop, past t.Run()
+	t := &tray.Tray{Page: page, Updates: upd, Today: a.today, OnExit: shutdown}
 	t.Run() // blocks until Quit
 	shutdown()
 	return nil
@@ -381,7 +391,11 @@ func cmdOpen(args []string) error {
 	if err != nil {
 		return err
 	}
-	return platform.Open("http://" + *addr + "/?t=" + token)
+	base := "http://" + *addr
+	if err := auth.Verify(context.Background(), base, token); err != nil {
+		return fmt.Errorf("%s: %w (is baca running? baca start)", *addr, err)
+	}
+	return platform.Open(auth.PageURL(base, token))
 }
 
 // cmdStart starts the tray in the background unless something already serves the address.
@@ -391,6 +405,13 @@ func cmdStart(args []string) error {
 	fs.Parse(args)
 	if c, err := net.DialTimeout("tcp", *addr, time.Second); err == nil {
 		c.Close()
+		token, err := platform.Token()
+		if err != nil {
+			return err
+		}
+		if err := auth.Verify(context.Background(), "http://"+*addr, token); err != nil {
+			return fmt.Errorf("%s: %w", *addr, err)
+		}
 		fmt.Println("baca is already running on", *addr)
 		return nil
 	}
