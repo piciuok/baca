@@ -198,7 +198,9 @@ func TestSystemProbeIDEAndMeeting(t *testing.T) {
 	now := time.Date(2026, 11, 4, 10, 0, 0, 0, time.Local)
 	c.Now = func() time.Time { return now }
 	title, idle, huddle := "app-admin – src/Export.php", time.Duration(0), false
-	p.sample = func(context.Context, bool) (sample, error) { return sample{App: "PhpStorm", Title: title, Idle: idle}, nil }
+	p.sample = func(context.Context, bool) (sample, error) {
+		return sample{App: "PhpStorm", Title: title, Idle: idle}, nil
+	}
 	p.windows = func(context.Context, []string) ([][2]string, error) {
 		if huddle {
 			return [][2]string{{"Slack", "Huddle: #team"}}, nil
@@ -319,5 +321,35 @@ func TestJiraProbe(t *testing.T) {
 	}
 	if out[1].To != clock(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).In(time.Local)) {
 		t.Fatalf("comment time %s", out[1].To)
+	}
+}
+
+func TestGitHubProbe(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/users/dev/events" || r.Header.Get("Authorization") != "Bearer tok" {
+			http.Error(w, "nf", 404)
+			return
+		}
+		io.WriteString(w, `[
+		 {"type":"PullRequestReviewEvent","repo":{"name":"acme/web"},"created_at":"2026-11-04T10:00:00Z","payload":{"action":"created","review":{"state":"APPROVED"},"pull_request":{"number":5,"title":"ABC-5 Login","head":{"ref":"feature/ABC-5"}}}},
+		 {"type":"PushEvent","repo":{"name":"acme/app"},"created_at":"2026-11-04T09:00:00Z","payload":{"ref":"refs/heads/abc6-fix","commits":[{"message":"first"},{"message":"Fix totals\n\nbody"}]}},
+		 {"type":"WatchEvent","repo":{"name":"acme/app"},"created_at":"2026-11-04T08:00:00Z","payload":{}},
+		 {"type":"PushEvent","repo":{"name":"acme/app"},"created_at":"2026-11-01T09:00:00Z","payload":{"ref":"refs/heads/old"}}
+		]`)
+	}))
+	defer srv.Close()
+	p := NewGitHubProbe(GitHubConfig{User: "dev", Token: "tok", BaseURL: srv.URL})
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).In(time.Local)
+	out, err := p.Tick(context.Background(), now)
+	if err != nil || len(out) != 2 {
+		t.Fatalf("%v %+v", err, out)
+	}
+	if out[0].Title != "approved PR #5 ABC-5 Login" || out[0].Repo != "web" || out[0].Branch != "feature/ABC-5" ||
+		out[1].Title != "pushed to abc6-fix: Fix totals" || out[1].Branch != "abc6-fix" {
+		t.Fatalf("%+v", out)
+	}
+	d := Analyze(out, map[string]bool{"ABC": true})
+	if len(d.Suggestions) != 2 || d.Suggestions[0].Ticket != "ABC-6" || d.Suggestions[1].Ticket != "ABC-5" {
+		t.Fatalf("%+v", d.Suggestions)
 	}
 }
