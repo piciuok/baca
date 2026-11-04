@@ -129,7 +129,7 @@ func (c Config) Probes() []Probe {
 	if on(c.GitLab.Enabled) && len(c.GitLab.Instances) > 0 {
 		out = append(out, NewGitLabProbe(c.GitLab))
 	}
-	if on(c.GitHub.Enabled) && c.GitHub.User != "" {
+	if on(c.GitHub.Enabled) && len(c.GitHub.Accounts) > 0 {
 		out = append(out, NewGitHubProbe(c.GitHub))
 	}
 	if on(c.Calendar.Enabled) && len(c.Calendar.URLs) > 0 {

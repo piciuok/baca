@@ -15,9 +15,13 @@ import (
 )
 
 type GitHubConfig struct {
-	Enabled *bool `json:"enabled"`
-	// User is the GitHub login whose events are read. The token comes from Token, GITHUB_TOKEN
-	// or gh (gh auth token --user <User>), so with several gh accounts the right one is used.
+	Enabled  *bool           `json:"enabled"`
+	Accounts []GitHubAccount `json:"accounts"`
+}
+
+// GitHubAccount is a GitHub login whose events are read. The token comes from Token,
+// GITHUB_TOKEN or gh (gh auth token --user <User>), so with several gh accounts the right one is used.
+type GitHubAccount struct {
 	User    string `json:"user"`
 	Token   string `json:"token"`
 	BaseURL string `json:"baseUrl"` // default https://api.github.com (GitHub Enterprise: https://host/api/v3)
@@ -29,16 +33,18 @@ type GitHubProbe struct {
 	cfg  GitHubConfig
 	http *http.Client
 
-	mu    sync.Mutex
-	token string
-	count int
+	mu     sync.Mutex
+	tokens map[string]string
+	count  int
 }
 
 func NewGitHubProbe(cfg GitHubConfig) *GitHubProbe {
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = "https://api.github.com"
+	for i := range cfg.Accounts {
+		if cfg.Accounts[i].BaseURL == "" {
+			cfg.Accounts[i].BaseURL = "https://api.github.com"
+		}
 	}
-	return &GitHubProbe{cfg: cfg, http: &http.Client{Timeout: 20 * time.Second}}
+	return &GitHubProbe{cfg: cfg, http: &http.Client{Timeout: 20 * time.Second}, tokens: map[string]string{}}
 }
 
 func (p *GitHubProbe) Name() string           { return "github" }
@@ -50,26 +56,30 @@ func (p *GitHubProbe) Days(now time.Time) []string {
 func (p *GitHubProbe) Info() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return fmt.Sprintf("%s · events today and yesterday: %d", p.cfg.User, p.count)
+	users := make([]string, len(p.cfg.Accounts))
+	for i, a := range p.cfg.Accounts {
+		users[i] = a.User
+	}
+	return fmt.Sprintf("%s · events today and yesterday: %d", strings.Join(users, ", "), p.count)
 }
 
-func (p *GitHubProbe) getToken(ctx context.Context) (string, error) {
+func (p *GitHubProbe) getToken(ctx context.Context, a GitHubAccount) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.token != "" {
-		return p.token, nil
+	if t := p.tokens[a.User]; t != "" {
+		return t, nil
 	}
-	t := p.cfg.Token
+	t := a.Token
 	if t == "" {
 		t = os.Getenv("GITHUB_TOKEN")
 	}
 	if t == "" {
 		var err error
-		if t, err = run(ctx, "gh", "auth", "token", "--user", p.cfg.User); err != nil || t == "" {
-			return "", fmt.Errorf("github %s: no token (token in the config, GITHUB_TOKEN or gh auth login)", p.cfg.User)
+		if t, err = run(ctx, "gh", "auth", "token", "--user", a.User); err != nil || t == "" {
+			return "", fmt.Errorf("github %s: no token (token in the settings, GITHUB_TOKEN or gh auth login)", a.User)
 		}
 	}
-	p.token = t
+	p.tokens[a.User] = t
 	return t, nil
 }
 
@@ -104,10 +114,30 @@ type githubEvent struct {
 }
 
 func (p *GitHubProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
-	if p.cfg.User == "" {
-		return nil, fmt.Errorf("github: set activity.github.user")
+	var out []Span
+	var errs []string
+	for _, a := range p.cfg.Accounts {
+		if a.User == "" {
+			continue
+		}
+		spans, err := p.fetch(ctx, a, now)
+		if err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		out = append(out, spans...)
 	}
-	tok, err := p.getToken(ctx)
+	p.mu.Lock()
+	p.count = len(out)
+	p.mu.Unlock()
+	if len(errs) > 0 {
+		return out, fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return out, nil
+}
+
+func (p *GitHubProbe) fetch(ctx context.Context, a GitHubAccount, now time.Time) ([]Span, error) {
+	tok, err := p.getToken(ctx, a)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +145,7 @@ func (p *GitHubProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 	start := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, now.Location())
 	var out []Span
 	for page := 1; page <= 3; page++ { // newest first, 100 per page
-		u := strings.TrimRight(p.cfg.BaseURL, "/") + "/users/" + url.PathEscape(p.cfg.User) + "/events?per_page=100&page=" + strconv.Itoa(page)
+		u := strings.TrimRight(a.BaseURL, "/") + "/users/" + url.PathEscape(a.User) + "/events?per_page=100&page=" + strconv.Itoa(page)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			return nil, err
@@ -129,7 +159,7 @@ func (p *GitHubProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 		res.Body.Close()
 		if res.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("github events: HTTP %d", res.StatusCode)
+			return nil, fmt.Errorf("github %s: HTTP %d", a.User, res.StatusCode)
 		}
 		var events []githubEvent
 		if err := json.Unmarshal(b, &events); err != nil {
@@ -163,9 +193,6 @@ func (p *GitHubProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 			break
 		}
 	}
-	p.mu.Lock()
-	p.count = len(out)
-	p.mu.Unlock()
 	return out, nil
 }
 

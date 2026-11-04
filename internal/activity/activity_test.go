@@ -339,7 +339,7 @@ func TestGitHubProbe(t *testing.T) {
 		]`)
 	}))
 	defer srv.Close()
-	p := NewGitHubProbe(GitHubConfig{User: "dev", Token: "tok", BaseURL: srv.URL})
+	p := NewGitHubProbe(GitHubConfig{Accounts: []GitHubAccount{{User: "dev", Token: "tok", BaseURL: srv.URL}}})
 	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).In(time.Local)
 	out, err := p.Tick(context.Background(), now)
 	if err != nil || len(out) != 2 {
