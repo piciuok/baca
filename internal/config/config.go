@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"baca/internal/activity"
+	"baca/internal/worklog"
 )
 
 // Mask stands for a secret in the UI. Saving it back keeps the stored value.
@@ -28,6 +29,7 @@ type Config struct {
 	JiraBaseURL  string          `json:"jiraBaseUrl"`
 	TempoBaseURL string          `json:"tempoBaseUrl"`
 	Workday      Workday         `json:"workday"`
+	Weekdays     []string        `json:"weekdays"` // names for new day headers, Sunday first, any language
 	Updates      Updates         `json:"updates"`
 	Activity     activity.Config `json:"activity"`
 }
@@ -85,6 +87,16 @@ func (c Config) Validate() error {
 	}
 	if t <= 0 || t > 24*60 {
 		return errors.New("working hours: the target must be between 0 and 24 h")
+	}
+	if len(c.Weekdays) != 0 {
+		if len(c.Weekdays) != 7 {
+			return errors.New("weekdays: give 7 names, Sunday first")
+		}
+		for _, d := range c.Weekdays {
+			if !worklog.WeekdayRE.MatchString(d) {
+				return fmt.Errorf("weekdays: %q must be letters only", d)
+			}
+		}
 	}
 	for app, expr := range c.Activity.System.Meetings {
 		if _, err := regexp.Compile(expr); err != nil {

@@ -12,6 +12,7 @@ import (
 	"baca/internal/server"
 	"baca/internal/tempo"
 	"baca/internal/tray"
+	"baca/internal/worklog"
 )
 
 // app owns config.json and rebuilds the server state (Tempo client, probes, working hours)
@@ -74,6 +75,7 @@ func (a *app) apply(c config.Config) {
 		file = "~/.local/share/baca/worklog.txt"
 	}
 	a.srv.Store.SetPath(home(file))
+	worklog.SetWeekdays(c.Weekdays)
 
 	st := &server.State{Workday: c.Workday}
 	act := c.Activity // Defaults fills the copy only, config.json stays as written

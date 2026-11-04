@@ -210,8 +210,8 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
 
 <dialog id="importDlg">
   <h3 style="margin-top:0">Import worklog</h3>
-  <p class="muted" style="margin-top:0">Paste the output of <code>/worklog</code> or a part of the file. A header like <code>@Wtorek 27.10</code> sets the day; without one the blocks go to the current day. Open blocks of that day are replaced, logged ones stay (⌘Z undoes).</p>
-  <textarea id="importTxt" placeholder="@Wtorek 27.10&#10;[06:30 - 08:40] - ABC-581 - Continue task, ..."></textarea>
+  <p class="muted" style="margin-top:0">Paste the output of <code>/worklog</code> or a part of the file. A header like <code>@Tuesday 27.10</code> (any weekday name) sets the day; without one the blocks go to the current day. Open blocks of that day are replaced, logged ones stay (⌘Z undoes).</p>
+  <textarea id="importTxt" placeholder="@Tuesday 27.10&#10;[06:30 - 08:40] - ABC-581 - Continue task, ..."></textarea>
   <div class="row" style="margin-top:10px"><span id="importInfo" class="muted"></span><span style="flex:1"></span>
     <button id="importCancel">Cancel</button><button id="importOk" class="primary">Load</button></div>
 </dialog>
@@ -240,7 +240,7 @@ let TARGET = 8 * 60;                              // daily target; from the sett
 let SUM_SCALE = TARGET / 0.8;                     // target = 80% of the sum bar width
 const SAVE_DELAY = 400;                           // ms without changes before writing the file
 const PALETTE = ['#5aa9ff','#f6c344','#6dd3a8','#ff8a65','#b79cff','#4dd0e1','#f48fb1','#aed581','#ffb74d','#90a4ae','#e57373','#81c784','#ce93d8','#80cbc4'];
-const DAYS = ['Niedziela','Poniedziałek','Wtorek','Środa','Czwartek','Piątek','Sobota'];
+let DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];   // day headers; from the settings
 const DAYS_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const TICKET_RE = /^[A-Z][A-Z0-9]*-\d+$/;
 const WRAP_MIN = 60;                              // a shorter entry line cannot have wrapped (like WrapMin in Go)
@@ -684,6 +684,7 @@ const SETTINGS = [
   ]},
   { title: 'Worklog file', fields: [
     { path: 'worklogFile', label: 'Path', type: 'text', hint: 'the -file flag at start wins' },
+    { path: 'weekdays', label: 'Weekday names', type: 'lines', hint: 'for new day headers (@Tuesday 03.11): 7 lines, Sunday first, any language; empty = English' },
   ]},
   { title: 'Jira and Tempo (logging hours)', fields: [
     { path: 'jiraBaseUrl', label: 'Jira address', type: 'text', placeholder: 'https://company.atlassian.net' },
@@ -820,6 +821,7 @@ $('#setSave').onclick = async () => {
     $('#settingsDlg').close();
     cfg = await api('GET', '/api/config');
     applyWorkday(cfg.workday);
+    if (cfg.weekdays?.length === 7) DAYS = cfg.weekdays;
     render(); loadActivity();
     renderFooter();
     toast('Settings saved, probes reloaded.');
@@ -1213,6 +1215,7 @@ addEventListener('resize', () => { renderTimeline(); renderSum(); });
   try {
     cfg = await api('GET', '/api/config');
     applyWorkday(cfg.workday);
+    if (cfg.weekdays?.length === 7) DAYS = cfg.weekdays;
     render();
     renderFooter();
   } catch {

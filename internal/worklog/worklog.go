@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -92,18 +93,45 @@ type File struct {
 }
 
 var (
-	headerRE = regexp.MustCompile(`^\s*@(\pL+)\s+(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\b`)
+	headerRE = regexp.MustCompile(`^\s*@([\pL\pM]+)\s+(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\b`)
 	tagRE    = regexp.MustCompile(`\s*#~([^~#\s]*)~#\s*$`)
 	entryRE  = regexp.MustCompile(`^\s*(\*)?\s*\[(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\]\s*-\s*(\S+)\s*-\s*(.*?)\s*$`)
 )
 
-var weekdays = [...]string{"Niedziela", "Poniedziałek", "Wtorek", "Środa", "Czwartek", "Piątek", "Sobota"}
+// DefaultWeekdays name the days in new headers unless the settings say otherwise.
+var DefaultWeekdays = []string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
+
+// WeekdayRE is what a weekday name may look like: letters of any script, nothing else.
+var WeekdayRE = regexp.MustCompile(`^[\pL\pM]+$`)
+
+var (
+	weekdaysMu sync.RWMutex
+	weekdays   = DefaultWeekdays
+)
+
+// SetWeekdays sets the names (Sunday first) used for new day headers, in any language.
+// Parsing never depends on them: a header is read by its date.
+func SetWeekdays(names []string) {
+	if len(names) != 7 {
+		names = DefaultWeekdays
+	}
+	weekdaysMu.Lock()
+	weekdays = append([]string(nil), names...)
+	weekdaysMu.Unlock()
+}
+
+// Weekdays returns the names in use, Sunday first.
+func Weekdays() []string {
+	weekdaysMu.RLock()
+	defer weekdaysMu.RUnlock()
+	return append([]string(nil), weekdays...)
+}
 
 func HM(m int) string { return fmt.Sprintf("%02d:%02d", m/60, m%60) }
 
-// Header renders the header the /worklog skill writes: "@Wtorek 03.11".
+// Header renders a day header: "@Tuesday 03.11" (the weekday name comes from SetWeekdays).
 func Header(d time.Time) string {
-	return fmt.Sprintf("@%s %02d.%02d", weekdays[d.Weekday()], d.Day(), int(d.Month()))
+	return fmt.Sprintf("@%s %02d.%02d", Weekdays()[d.Weekday()], d.Day(), int(d.Month()))
 }
 
 // ParseEntry parses one entry line; ok is false for any other line.

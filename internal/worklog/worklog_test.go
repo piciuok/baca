@@ -105,15 +105,15 @@ func TestSetDayInsertsInOrder(t *testing.T) {
 	f := Parse(sample, now)
 	e := []Entry{{Start: 360, End: 420, Ticket: "ABC-1", Desc: "a"}}
 	got := f.SetDay(date(2026, 11, 2), e, now).String()
-	if !strings.Contains(got, "[08:40 - 09:00] - ABC-868 - Continue task\n\n\n@Poniedziałek 02.11\n[06:00 - 07:00] - ABC-1 - a\n\n@Piatek 30.10") {
+	if !strings.Contains(got, "[08:40 - 09:00] - ABC-868 - Continue task\n\n\n@Monday 02.11\n[06:00 - 07:00] - ABC-1 - a\n\n@Piatek 30.10") {
 		t.Fatalf("insert between days:\n%s", got)
 	}
 	got = f.SetDay(date(2026, 11, 4), e, now).String()
-	if !strings.HasPrefix(got, "# notes at the top\n@Środa 04.11\n[06:00 - 07:00] - ABC-1 - a\n\n@Wtorek 03.11\n") {
+	if !strings.HasPrefix(got, "# notes at the top\n@Wednesday 04.11\n[06:00 - 07:00] - ABC-1 - a\n\n@Wtorek 03.11\n") {
 		t.Fatalf("insert newest:\n%s", got)
 	}
 	got = Parse("", now).SetDay(date(2026, 11, 4), e, now).String()
-	if got != "@Środa 04.11\n[06:00 - 07:00] - ABC-1 - a\n" {
+	if got != "@Wednesday 04.11\n[06:00 - 07:00] - ABC-1 - a\n" {
 		t.Fatalf("empty file: %q", got)
 	}
 }
@@ -203,7 +203,7 @@ func TestStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(path)
-	want := "@Wtorek 03.11\n*[07:00 - 08:00] - ABC-1 - a #~555~#\n[08:00 - 08:30] - ABC-2 - Continue task\n"
+	want := "@Tuesday 03.11\n*[07:00 - 08:00] - ABC-1 - a #~555~#\n[08:00 - 08:30] - ABC-2 - Continue task\n"
 	if string(b) != want {
 		t.Fatalf("file:\n%s", b)
 	}
@@ -236,4 +236,22 @@ func TestRealFile(t *testing.T) {
 		t.Logf("%s %-16q entries=%d minutes=%d extra=%d", d.Key(), d.Header, len(d.Entries), d.Minutes(), len(d.Extra))
 	}
 	t.Logf("days=%d unparsed lines=%d", len(f.Days), extra)
+}
+
+// Weekday names are free: any script parses (only the date counts), and new headers use the
+// configured names.
+func TestWeekdaysAnyLanguage(t *testing.T) {
+	f := Parse("@星期二 03.11\n[07:00 - 08:00] - A-1 - x\n@Mittwoch 28.10\n[07:00 - 08:00] - A-1 - x\n", now)
+	if len(f.Days) != 2 || f.Days[0].Key() != "2026-11-03" || f.Days[1].Key() != "2026-10-28" {
+		t.Fatalf("%+v", f.Days)
+	}
+	SetWeekdays([]string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"})
+	defer SetWeekdays(nil)
+	if h := Header(date(2026, 11, 4)); h != "@星期三 04.11" {
+		t.Fatal(h)
+	}
+	SetWeekdays([]string{"too", "few"})
+	if h := Header(date(2026, 11, 4)); h != "@Wednesday 04.11" {
+		t.Fatal(h)
+	}
 }

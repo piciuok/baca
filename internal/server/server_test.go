@@ -165,7 +165,7 @@ func TestPutDayAndGuard(t *testing.T) {
 		t.Fatalf("overlap: %d", code)
 	}
 	b, _ := os.ReadFile(path)
-	if string(b) != "@Wtorek 03.11\n[07:00 - 08:00] - ABC-1 - a\n" {
+	if string(b) != "@Tuesday 03.11\n[07:00 - 08:00] - ABC-1 - a\n" {
 		t.Fatalf("file: %q", b)
 	}
 

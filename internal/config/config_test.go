@@ -61,6 +61,12 @@ func TestSaveLoadAndWorkday(t *testing.T) {
 	if s, e, tg := (Workday{}).Minutes(); s != 360 || e != 1080 || tg != 480 {
 		t.Fatal("defaults", s, e, tg)
 	}
+	if (Config{Weekdays: []string{"Mon"}}).Validate() == nil || (Config{Weekdays: []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat 1"}}).Validate() == nil {
+		t.Fatal("bad weekdays accepted")
+	}
+	if err := (Config{Weekdays: []string{"日", "月", "火", "水", "木", "金", "土"}}).Validate(); err != nil {
+		t.Fatal(err)
+	}
 	for _, w := range []Workday{{Start: "7:30"}, {Start: "17:00", End: "17:30"}, {TargetHours: 25}} {
 		if (Config{Workday: w}).Validate() == nil {
 			t.Fatalf("accepted %+v", w)
