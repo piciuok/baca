@@ -1,45 +1,125 @@
-// baca serves the day bar UI on localhost and keeps the worklog in a plain text file.
+// baca shows the working day as a timeline, keeps the worklog in a plain text file,
+// suggests blocks from activity probes and logs hours to Tempo. It lives in the menu bar /
+// system tray and serves its UI on localhost.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
-	"baca/internal/activity"
 	"baca/internal/config"
+	"baca/internal/platform"
 	"baca/internal/server"
-	"baca/internal/tempo"
+	"baca/internal/tray"
+	"baca/internal/update"
 	"baca/internal/worklog"
 	"baca/web"
 )
 
+const usage = `baca — day timeline, worklog and Tempo logging (macOS, Linux)
+
+Usage:
+  baca [tray] [--foreground]   menu bar / tray icon with the UI server; from a terminal
+                                     it starts in the background and returns
+  baca serve [-open]           UI server only, no icon (development)
+  baca install | uninstall     copies the binary to ~/.local/bin and enables start at login
+  baca update [--check] [--pre] [--force]
+                                     update to the latest GitHub release
+  baca version
+
+Common flags (tray, serve): -addr, -config, -file, -collect=false
+`
+
+var version = "dev"
+
+func main() {
+	args := os.Args[1:]
+	cmd := "tray"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		cmd, args = args[0], args[1:]
+	}
+	var err error
+	switch cmd {
+	case "tray":
+		err = cmdRun(args, true)
+	case "serve":
+		err = cmdRun(args, false)
+	case "install":
+		err = cmdInstall()
+	case "uninstall":
+		err = platform.AutostartUninstall()
+		if err == nil {
+			fmt.Println("Start at login disabled. The binary, config and data are kept.")
+		}
+	case "update":
+		err = cmdUpdate(args)
+	case "version", "--version":
+		fmt.Println(version)
+	case "help", "-h", "--help":
+		fmt.Print(usage)
+	default:
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "baca:", err)
+		os.Exit(1)
+	}
+}
+
 func home(p string) string {
-	if strings.HasPrefix(p, "~/") {
+	if p == "~" || strings.HasPrefix(p, "~/") {
 		h, _ := os.UserHomeDir()
-		return filepath.Join(h, p[2:])
+		return filepath.Join(h, strings.TrimPrefix(p, "~"))
 	}
 	return p
 }
 
-// defaultConfig is config.json next to the binary, or in the working directory under go run.
-func defaultConfig() string {
-	if exe, err := os.Executable(); err == nil && !strings.Contains(exe, "go-build") {
-		return filepath.Join(filepath.Dir(exe), "config.json")
+func exists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// configPath: -config / BACA_CONFIG, else ~/.config/baca/config.json, else an older
+// config.json next to the binary or in the working directory, else the new default.
+func configPath(flagVal string) string {
+	if flagVal != "" {
+		return home(flagVal)
 	}
-	return "config.json"
+	if v := os.Getenv("BACA_CONFIG"); v != "" {
+		return home(v)
+	}
+	def := home("~/.config/baca/config.json")
+	if exists(def) {
+		return def
+	}
+	for _, p := range legacyConfigs() {
+		if exists(p) {
+			return p
+		}
+	}
+	return def
+}
+
+func legacyConfigs() []string {
+	var out []string
+	if exe, err := os.Executable(); err == nil && !strings.Contains(exe, "go-build") {
+		out = append(out, filepath.Join(filepath.Dir(exe), "config.json"))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		out = append(out, filepath.Join(wd, "config.json"))
+	}
+	return out
 }
 
 func env(key, def string) string {
@@ -49,146 +129,234 @@ func env(key, def string) string {
 	return def
 }
 
-func main() {
-	addr := flag.String("addr", env("BACA_ADDR", "127.0.0.1:7788"), "server address (localhost only)")
-	cfgPath := flag.String("config", env("BACA_CONFIG", defaultConfig()), "config.json (settings, tokens)")
-	file := flag.String("file", os.Getenv("BACA_FILE"), "worklog file (overrides worklogFile from the config)")
-	open := flag.Bool("open", false, "open the UI in the browser")
-	collect := flag.Bool("collect", true, "collect activity (probes from the settings)")
-	flag.Parse()
+func interactive() bool {
+	st, err := os.Stdin.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
+
+func updateManager() *update.Manager {
+	return &update.Manager{Version: version, StatusPath: filepath.Join(platform.StateDir(), "update.json")}
+}
+
+// cmdRun serves the UI and runs the probes; withTray adds the menu bar icon.
+func cmdRun(args []string, withTray bool) error {
+	name := "serve"
+	if withTray {
+		name = "tray"
+	}
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	addr := fs.String("addr", env("BACA_ADDR", "127.0.0.1:7788"), "server address (localhost only)")
+	cfgFlag := fs.String("config", "", "config.json (default ~/.config/baca/config.json)")
+	file := fs.String("file", os.Getenv("BACA_FILE"), "worklog file (overrides the settings)")
+	collect := fs.Bool("collect", true, "collect activity (probes from the settings)")
+	open := fs.Bool("open", false, "open the UI in the browser")
+	foreground := fs.Bool("foreground", false, "tray: stay attached to the terminal")
+	fs.Parse(args)
+
+	if withTray && !*foreground && interactive() {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		if err := platform.StartTray(exe); err != nil {
+			return err
+		}
+		fmt.Println("baca runs in the background (menu bar icon). Logs:", platform.StateDir())
+		return nil
+	}
 
 	host, _, err := net.SplitHostPort(*addr)
 	if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
-		log.Fatalf("-addr must be on localhost, got %q", *addr)
+		return fmt.Errorf("-addr must be on localhost, got %q", *addr)
 	}
-	cfg, err := config.Load(home(*cfgPath))
+	url := "http://" + *addr
+	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
-		log.Fatal(err)
+		if withTray && errors.Is(err, syscall.EADDRINUSE) {
+			// already running: show it instead of starting a second copy
+			_ = platform.Open(url)
+			return nil
+		}
+		return err
+	}
+	path := configPath(*cfgFlag)
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	a := &app{path: home(*cfgPath), fileFlag: *file, collect: *collect, ctx: ctx,
-		srv: &server.Server{Store: worklog.NewStore(""), Web: web.FS}}
+	upd := updateManager()
+	upd.Prerelease = func() bool { return false }
+	a := &app{path: path, fileFlag: *file, collect: *collect, ctx: ctx,
+		srv: &server.Server{Store: worklog.NewStore(""), Web: web.FS, Updates: upd, Version: version}}
 	a.srv.Settings = a
 	a.apply(cfg)
+	upd.Prerelease = func() bool { return a.Get().Updates.Prerelease }
 
-	ln, err := net.Listen("tcp", *addr)
-	if err != nil {
-		log.Fatal(err)
-	}
-	url := "http://" + ln.Addr().String()
-	log.Printf("baca: %s  file: %s", url, a.srv.Store.FilePath())
+	log.Printf("baca %s: %s  file: %s  config: %s", version, url, a.srv.Store.FilePath(), path)
 	if *open {
-		go openBrowser(url)
+		_ = platform.Open(url)
 	}
 	srv := &http.Server{Handler: a.srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		<-ctx.Done()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+	go upd.Loop(ctx, 6*time.Hour, func() bool { return a.Get().Updates.CheckOn() })
+
+	shutdown := func() {
 		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		srv.Shutdown(sctx)
+		a.stopCollector() // the open activity span is written before exit
+	}
+
+	if !withTray {
+		select {
+		case <-ctx.Done():
+		case err := <-serveErr:
+			if err != nil && err != http.ErrServerClosed {
+				return err
+			}
+		}
+		shutdown()
+		return nil
+	}
+
+	upd.Notify = func(in update.Info) {
+		platform.Notify(platform.Notification{Title: "baca " + in.Latest + " is available",
+			Message: "You have " + in.Current + ". Choose “⬆ Update” in the menu.", Open: in.URL})
+	}
+	upd.Restart = func(exe string) error {
+		platform.Notify(platform.Notification{Title: "baca updated", Message: "Restarting…"})
+		quit, err := platform.Relaunch(exe)
+		if err == nil && quit {
+			tray.Quit()
+		}
+		return err
+	}
+	if from := upd.UpdatedFrom(); from != "" {
+		go platform.Notify(platform.Notification{Title: "baca " + version, Message: "Updated from " + from + "."})
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-serveErr:
+		}
+		tray.Quit()
 	}()
-	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
-	}
-	a.stopCollector() // the open activity span is written before exit
-}
-
-// app owns config.json and rebuilds the server state (Tempo client, probes, working hours)
-// whenever the settings change.
-type app struct {
-	path     string
-	fileFlag string // -file wins over worklogFile
-	collect  bool
-	ctx      context.Context
-	srv      *server.Server
-
-	mu       sync.Mutex
-	cfg      config.Config
-	cancel   context.CancelFunc
-	finished chan struct{}
-}
-
-func (a *app) Path() string { return a.path }
-
-func (a *app) Get() config.Config {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.cfg
-}
-
-func (a *app) Apply(c config.Config) error {
-	if err := c.Validate(); err != nil {
-		return err
-	}
-	if err := config.Save(a.path, c); err != nil {
-		return err
-	}
-	a.apply(c)
-	log.Printf("settings saved: %s", a.path)
+	t := &tray.Tray{URL: url, Updates: upd, Today: a.today}
+	t.Run() // blocks until Quit
+	shutdown()
 	return nil
 }
 
-func (a *app) stopCollector() {
-	a.mu.Lock()
-	cancel, done := a.cancel, a.finished
-	a.cancel, a.finished = nil, nil
-	a.mu.Unlock()
-	if cancel != nil {
-		cancel()
-		<-done
-	}
-}
-
-func (a *app) apply(c config.Config) {
-	a.stopCollector()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.cfg = c
-
-	file := a.fileFlag
-	if file == "" {
-		file = c.WorklogFile
-	}
-	if file == "" {
-		file = "~/.local/share/baca/worklog.txt"
-	}
-	a.srv.Store.SetPath(home(file))
-
-	st := &server.State{Workday: c.Workday}
-	act := c.Activity // Defaults fills the copy only, config.json stays as written
-	tc, err := tempo.Prepare(tempo.Config{AccountEmail: c.AccountEmail, Tokens: c.Tokens, JiraBaseURL: c.JiraBaseURL, TempoBaseURL: c.TempoBaseURL})
+func cmdUpdate(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	check := fs.Bool("check", false, "only check whether a newer version exists")
+	pre := fs.Bool("pre", false, "also consider pre-releases")
+	force := fs.Bool("force", false, "install even over a development build")
+	fs.Parse(args)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	c := &update.Client{Version: version}
+	rel, err := c.Latest(ctx, *pre)
 	if err != nil {
-		st.TempoErr = err.Error()
-		log.Printf("Tempo disabled: %v", err)
-	} else {
-		st.Tempo = tempo.New(tc)
-		act.JiraAuth = activity.JiraAuth{BaseURL: tc.JiraBaseURL, Email: tc.AccountEmail, Token: tc.Tokens.Jira}
+		return fmt.Errorf("checking %s: %w", update.Repo, err)
 	}
-	act.Defaults(home(file))
-	st.Activity = activity.Log{Dir: act.Dir}
-	if probes := act.Probes(); a.collect && len(probes) > 0 {
-		st.Collector = activity.NewCollector(st.Activity, probes...)
-		ctx, cancel := context.WithCancel(a.ctx)
-		done := make(chan struct{})
-		go func() { st.Collector.Run(ctx); close(done) }()
-		a.cancel, a.finished = cancel, done
-		names := []string{}
-		for _, p := range probes {
-			names = append(names, p.Name())
+	newer, err := update.Newer(version, rel.Tag)
+	switch {
+	case errors.Is(err, update.ErrDevBuild):
+		fmt.Printf("This is a development build (%s); the latest release is %s.\n", version, rel.Tag)
+		if *check {
+			return nil
 		}
-		log.Printf("activity: %s → %s", strings.Join(names, ", "), act.Dir)
+		if !*force {
+			return errors.New("not replacing a development build — use --force")
+		}
+	case err != nil:
+		return err
+	case !newer:
+		fmt.Printf("You are on the latest version (%s).\n", version)
+		return nil
+	default:
+		fmt.Printf("%s is available (you have %s): %s\n", rel.Tag, version, rel.URL)
+		if *check {
+			return nil
+		}
 	}
-	a.srv.SetState(st)
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Downloading %s…\n", update.AssetName(rel.Tag, runtime.GOOS, runtime.GOARCH))
+	if err := c.Install(ctx, rel, exe); err != nil {
+		return err
+	}
+	fmt.Printf("Installed %s at %s (checksum verified). Restart the icon (Quit → baca).\n", rel.Tag, exe)
+	return nil
 }
 
-func openBrowser(url string) {
-	cmd := "xdg-open"
+// cmdInstall copies the running binary to ~/.local/bin, moves an older config.json to
+// ~/.config/baca and enables start at login.
+func cmdInstall() error {
+	src, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	dst := home("~/.local/bin/baca")
+	if src != dst {
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		b, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		if err := update.Replace(dst, b); err != nil {
+			return err
+		}
+	}
+	newCfg := home("~/.config/baca/config.json")
+	if !exists(newCfg) {
+		for _, p := range legacyConfigs() {
+			if !exists(p) {
+				continue
+			}
+			if err := copyFile(p, newCfg, 0o600); err != nil {
+				return err
+			}
+			fmt.Println("Config copied:", p, "→", newCfg)
+			break
+		}
+	}
+	if err := platform.AutostartInstall(dst); err != nil {
+		return err
+	}
+	fmt.Println("Installed", dst, "— start at login enabled.")
 	if runtime.GOOS == "darwin" {
-		cmd = "open"
+		fmt.Println("Window titles: grant the Accessibility permission to", dst, "(System Settings → Privacy & Security → Accessibility).")
 	}
-	if err := exec.Command(cmd, url).Start(); err != nil {
-		fmt.Fprintln(os.Stderr, "cannot open the browser:", err)
+	fmt.Println("Start it now:", dst)
+	return nil
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
 	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }

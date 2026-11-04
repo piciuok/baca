@@ -28,8 +28,17 @@ type Config struct {
 	JiraBaseURL  string          `json:"jiraBaseUrl"`
 	TempoBaseURL string          `json:"tempoBaseUrl"`
 	Workday      Workday         `json:"workday"`
+	Updates      Updates         `json:"updates"`
 	Activity     activity.Config `json:"activity"`
 }
+
+// Updates: whether the app looks for new releases (every 6 h) and takes pre-releases.
+type Updates struct {
+	Check      *bool `json:"check"`
+	Prerelease bool  `json:"prerelease"`
+}
+
+func (u Updates) CheckOn() bool { return u.Check == nil || *u.Check }
 
 // Workday is the visible part of the day and the daily target.
 type Workday struct {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"regexp"
@@ -18,13 +19,16 @@ import (
 	"baca/internal/activity"
 	"baca/internal/config"
 	"baca/internal/tempo"
+	"baca/internal/update"
 	"baca/internal/worklog"
 )
 
 type Server struct {
 	Store    *worklog.Store
-	Web      fs.FS    // must hold index.html
-	Settings Settings // nil: no settings screen
+	Web      fs.FS           // must hold index.html
+	Settings Settings        // nil: no settings screen
+	Updates  *update.Manager // nil: no update checks
+	Version  string
 
 	state atomic.Pointer[State]
 	logMu sync.Mutex
@@ -71,6 +75,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/activity/{date}", s.activity)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
+	mux.HandleFunc("POST /api/update/check", s.checkUpdate)
+	mux.HandleFunc("POST /api/update/install", s.installUpdate)
 	return guard(mux)
 }
 
@@ -124,7 +130,10 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 	st := s.st()
 	start, end, target := st.Workday.Minutes()
 	cfg := map[string]any{"file": s.Store.FilePath(), "tempo": st.Tempo != nil, "tempoError": st.TempoErr,
-		"workday": map[string]int{"start": start, "end": end, "target": target}, "settings": s.Settings != nil}
+		"workday": map[string]int{"start": start, "end": end, "target": target}, "settings": s.Settings != nil, "version": s.Version}
+	if s.Updates != nil {
+		cfg["update"] = s.Updates.Info()
+	}
 	if st.Tempo != nil {
 		cfg["jiraBase"] = st.Tempo.JiraBase()
 	}
@@ -477,4 +486,41 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": s.Settings.Path(), "config": s.Settings.Get().Masked(), "mask": config.Mask})
+}
+
+func (s *Server) checkUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.Updates == nil {
+		fail(w, http.StatusNotFound, errors.New("updates unavailable"), nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	defer cancel()
+	in, err := s.Updates.Check(ctx, true)
+	if err != nil {
+		fail(w, http.StatusBadGateway, err, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, in)
+}
+
+// installUpdate downloads the release and restarts; the page reconnects to the new process.
+func (s *Server) installUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.Updates == nil {
+		fail(w, http.StatusNotFound, errors.New("updates unavailable"), nil)
+		return
+	}
+	in := s.Updates.Info()
+	if in.Dev || in.Latest == "" || in.Installing {
+		fail(w, http.StatusConflict, errors.New("no update to install"), nil)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := s.Updates.Install(ctx); err != nil {
+			log.Printf("update: %v", err)
+		}
+	}()
+	in.Installing = true
+	writeJSON(w, http.StatusAccepted, in)
 }
