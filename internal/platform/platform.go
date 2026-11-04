@@ -3,6 +3,8 @@
 package platform
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,4 +84,26 @@ func detachTray(exe string) error {
 
 func xmlEsc(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
+}
+
+// Token returns the UI token from StateDir/token, creating it (mode 600) on first use. It is
+// stable across restarts, so a bookmarked page keeps working, and only this user can read it.
+func Token() (string, error) {
+	dir := StateDir()
+	path := filepath.Join(dir, "token")
+	if b, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(b))) >= 32 {
+		return strings.TrimSpace(string(b)), nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	tok := hex.EncodeToString(buf)
+	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return tok, os.Chmod(path, 0o600)
 }

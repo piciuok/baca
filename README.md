@@ -8,9 +8,17 @@ Lives in the menu bar (macOS) or the system tray (Linux). The icon is a ring tha
 make install                       # builds, copies to ~/.local/bin, enables start at login
 baca                         # icon + server (from a terminal it starts in the background)
 baca serve -open             # server only, no icon (development; make run)
+baca open                    # open the UI of the running app
 baca update [--check]        # update to the latest release
 go test ./...
 ```
+
+## Security
+
+- The server listens on localhost only and answers only to a loopback `Host` (no DNS rebinding).
+- Every request needs the UI token from `~/.local/state/baca/token` (mode 600): the page as `/?t=<token>`, API calls in the `X-Baca-Token` header. Other users and processes on the machine cannot read the worklog or the activity, and other web pages cannot call the API. The menu bar icon and `baca open` open the page with the token.
+- The page is never framed and sends no `Referer`. Tokens and private links in the config never reach the browser (see Configuration).
+- Report vulnerabilities privately, see [SECURITY.md](SECURITY.md).
 
 ## Releases and updates
 

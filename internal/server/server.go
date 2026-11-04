@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ type Server struct {
 	Settings Settings        // nil: no settings screen
 	Updates  *update.Manager // nil: no update checks
 	Version  string
+	Token    string // required on every request, see guard
 
 	state atomic.Pointer[State]
 	logMu sync.Mutex
@@ -77,13 +79,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	mux.HandleFunc("POST /api/update/check", s.checkUpdate)
 	mux.HandleFunc("POST /api/update/install", s.installUpdate)
-	return guard(mux)
+	return s.guard(mux)
 }
 
-// guard keeps other web pages away from the API: the Host must be a loopback name (no DNS
-// rebinding) and every write needs a custom header, which a cross-site request cannot send
-// without a CORS preflight that this server never allows.
-func guard(next http.Handler) http.Handler {
+// guard keeps everything else away from the UI and the API:
+//   - the Host must be a loopback name (no DNS rebinding);
+//   - the page needs ?t=<token> and every API call the X-Baca-Token header, so other local
+//     users and processes cannot read the worklog or the activity (window titles); a custom
+//     header also means no cross-site request can reach the API (no CORS preflight passes);
+//   - the page is never framed and never leaks its URL (with the token) in a Referer.
+func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host, _, err := net.SplitHostPort(r.Host)
 		if err != nil {
@@ -93,8 +98,17 @@ func guard(next http.Handler) http.Handler {
 			http.Error(w, "forbidden host", http.StatusForbidden)
 			return
 		}
-		if r.Method != http.MethodGet && r.Header.Get("X-Baca") != "1" {
-			http.Error(w, "missing X-Baca header", http.StatusForbidden)
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("X-Content-Type-Options", "nosniff")
+		token := r.Header.Get("X-Baca-Token")
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			token = r.URL.Query().Get("t")
+		}
+		if s.Token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.Token)) != 1 {
+			http.Error(w, "missing or invalid token — open baca from the menu bar icon or run: baca open", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)

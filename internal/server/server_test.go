@@ -87,7 +87,7 @@ func setup(t *testing.T, content string) (*httptest.Server, *fakeAtlassian, stri
 	var cfg tempo.Config
 	cfg.AccountEmail, cfg.Tokens.Jira, cfg.Tokens.Tempo = "me@example.com", "jira-token", "tempo-token"
 	cfg.JiraBaseURL, cfg.TempoBaseURL = atl.URL, atl.URL
-	s := &Server{Store: worklog.NewStore(path), Web: fstest.MapFS{"index.html": {Data: []byte("<html>")}}}
+	s := &Server{Store: worklog.NewStore(path), Web: fstest.MapFS{"index.html": {Data: []byte("<html>")}}, Token: "tok"}
 	s.SetState(&State{Tempo: tempo.New(cfg)})
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
@@ -97,9 +97,7 @@ func setup(t *testing.T, content string) (*httptest.Server, *fakeAtlassian, stri
 func call(t *testing.T, srv *httptest.Server, method, path, body string, out any) int {
 	t.Helper()
 	req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
-	if method != "GET" {
-		req.Header.Set("X-Baca", "1")
-	}
+	req.Header.Set("X-Baca-Token", "tok")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -171,15 +169,28 @@ func TestPutDayAndGuard(t *testing.T) {
 		t.Fatalf("file: %q", b)
 	}
 
-	// writes without the header and foreign hosts are refused
-	req, _ := http.NewRequest("PUT", srv.URL+"/api/days/2026-11-03", strings.NewReader(body))
-	if res, _ := http.DefaultClient.Do(req); res.StatusCode != http.StatusForbidden {
-		t.Fatalf("no header: %d", res.StatusCode)
+	// no token (reads too), a wrong token, a token in the API's query and foreign hosts are refused
+	for _, c := range []struct{ method, path, token string }{
+		{"PUT", "/api/days/2026-11-03", ""}, {"GET", "/api/days", ""}, {"GET", "/api/days", "nope"},
+		{"GET", "/api/days?t=tok", ""}, {"GET", "/", ""}, {"GET", "/?t=nope", ""},
+	} {
+		req, _ := http.NewRequest(c.method, srv.URL+c.path, strings.NewReader(body))
+		if c.token != "" {
+			req.Header.Set("X-Baca-Token", c.token)
+		}
+		if res, _ := http.DefaultClient.Do(req); res.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s %s %q: %d", c.method, c.path, c.token, res.StatusCode)
+		}
 	}
-	req, _ = http.NewRequest("GET", srv.URL+"/api/days", nil)
+	req, _ := http.NewRequest("GET", srv.URL+"/api/days", nil)
+	req.Header.Set("X-Baca-Token", "tok")
 	req.Host = "evil.example.com"
 	if res, _ := http.DefaultClient.Do(req); res.StatusCode != http.StatusForbidden {
 		t.Fatalf("foreign host: %d", res.StatusCode)
+	}
+	res, _ := http.Get(srv.URL + "/?t=tok")
+	if res.StatusCode != 200 || res.Header.Get("X-Frame-Options") != "DENY" || res.Header.Get("Referrer-Policy") != "no-referrer" {
+		t.Fatalf("page: %d %v", res.StatusCode, res.Header)
 	}
 	var days []worklog.DaySummary
 	call(t, srv, "GET", "/api/days", "", &days)
@@ -250,11 +261,13 @@ func TestSettings(t *testing.T) {
 	fs := &fakeSettings{}
 	fs.cfg.Tokens.Jira = "jira-secret"
 	fs.cfg.Activity.Slack.Token = "xoxp-secret"
-	s := &Server{Store: worklog.NewStore(filepath.Join(t.TempDir(), "w.txt")), Web: fstest.MapFS{"index.html": {Data: []byte("x")}}, Settings: fs}
+	s := &Server{Store: worklog.NewStore(filepath.Join(t.TempDir(), "w.txt")), Web: fstest.MapFS{"index.html": {Data: []byte("x")}}, Settings: fs, Token: "tok"}
 	srv2 := httptest.NewServer(s.Handler())
 	defer srv2.Close()
 
-	res, _ := http.Get(srv2.URL + "/api/settings")
+	req, _ := http.NewRequest("GET", srv2.URL+"/api/settings", nil)
+	req.Header.Set("X-Baca-Token", "tok")
+	res, _ := http.DefaultClient.Do(req)
 	b, _ := io.ReadAll(res.Body)
 	if strings.Contains(string(b), "secret") || !strings.Contains(string(b), config.Mask) {
 		t.Fatalf("leak or no mask: %s", b)

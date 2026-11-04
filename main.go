@@ -35,6 +35,7 @@ Usage:
   baca [tray] [--foreground]   menu bar / tray icon with the UI server; from a terminal
                                      it starts in the background and returns
   baca serve [-open]           UI server only, no icon (development)
+  baca open                    open the UI (with its token) in the browser
   baca install | uninstall     copies the binary to ~/.local/bin and enables start at login
   baca update [--check] [--pre] [--force]
                                      update to the latest GitHub release
@@ -57,6 +58,8 @@ func main() {
 		err = cmdRun(args, true)
 	case "serve":
 		err = cmdRun(args, false)
+	case "open":
+		err = cmdOpen(args)
 	case "install":
 		err = cmdInstall()
 	case "uninstall":
@@ -169,12 +172,17 @@ func cmdRun(args []string, withTray bool) error {
 	if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
 		return fmt.Errorf("-addr must be on localhost, got %q", *addr)
 	}
+	token, err := platform.Token()
+	if err != nil {
+		return err
+	}
 	url := "http://" + *addr
+	page := url + "/?t=" + token
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		if withTray && errors.Is(err, syscall.EADDRINUSE) {
 			// already running: show it instead of starting a second copy
-			_ = platform.Open(url)
+			_ = platform.Open(page)
 			return nil
 		}
 		return err
@@ -190,14 +198,14 @@ func cmdRun(args []string, withTray bool) error {
 	upd := updateManager()
 	upd.Prerelease = func() bool { return false }
 	a := &app{path: path, fileFlag: *file, collect: *collect, ctx: ctx,
-		srv: &server.Server{Store: worklog.NewStore(""), Web: web.FS, Updates: upd, Version: version}}
+		srv: &server.Server{Store: worklog.NewStore(""), Web: web.FS, Updates: upd, Version: version, Token: token}}
 	a.srv.Settings = a
 	a.apply(cfg)
 	upd.Prerelease = func() bool { return a.Get().Updates.Prerelease }
 
 	log.Printf("baca %s: %s  file: %s  config: %s", version, url, a.srv.Store.FilePath(), path)
 	if *open {
-		_ = platform.Open(url)
+		_ = platform.Open(page)
 	}
 	srv := &http.Server{Handler: a.srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
@@ -245,7 +253,7 @@ func cmdRun(args []string, withTray bool) error {
 		}
 		tray.Quit()
 	}()
-	t := &tray.Tray{URL: url, Updates: upd, Today: a.today}
+	t := &tray.Tray{URL: page, Updates: upd, Today: a.today}
 	t.Run() // blocks until Quit
 	shutdown()
 	return nil
@@ -359,4 +367,16 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	return out.Close()
+}
+
+// cmdOpen opens the running UI with its token.
+func cmdOpen(args []string) error {
+	fs := flag.NewFlagSet("open", flag.ExitOnError)
+	addr := fs.String("addr", env("BACA_ADDR", "127.0.0.1:7788"), "server address")
+	fs.Parse(args)
+	token, err := platform.Token()
+	if err != nil {
+		return err
+	}
+	return platform.Open("http://" + *addr + "/?t=" + token)
 }
