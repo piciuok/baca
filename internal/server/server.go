@@ -52,6 +52,7 @@ type State struct {
 	Workday   config.Workday
 	Describe  describe.Config
 	GitRepos  []string // globs of the watched repos (activity.git.repos)
+	ConfigErr string   // config.json could not be read: running on defaults
 }
 
 // Settings reads and applies config.json for the settings screen.
@@ -216,7 +217,7 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 	start, end, target := st.Workday.Minutes()
 	cfg := map[string]any{"file": s.Store.FilePath(), "tempo": st.Tempo != nil, "tempoError": st.TempoErr,
 		"workday": map[string]int{"start": start, "end": end, "target": target}, "settings": s.Settings != nil, "version": s.Version,
-		"weekdays": worklog.Weekdays(), "describeAgent": st.Describe.Agent}
+		"weekdays": worklog.Weekdays(), "describeAgent": st.Describe.Agent, "configError": st.ConfigErr}
 	if s.Updates != nil {
 		cfg["update"] = s.Updates.Info()
 	}

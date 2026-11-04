@@ -894,8 +894,8 @@ function readSettings() {
     switch (t) {
       case 'bool': v = el.checked; break;
       case 'number': v = el.value === '' ? 0 : Number(el.value); break;
-      case 'lines': v = el.value.split('\n').map(x => x.trim()).filter(Boolean); break;
-      case 'map': v = {}; for (const line of el.value.split('\n')) { const i = line.indexOf('='); if (i > 0) v[line.slice(0, i).trim()] = line.slice(i + 1).trim(); } break;
+      case 'lines': v = el.value.split('\n').map(x => x.trim()).filter(Boolean); if (!v.length) v = null; break;   // empty = the defaults
+      case 'map': v = {}; for (const line of el.value.split('\n')) { const i = line.indexOf('='); if (i > 0) v[line.slice(0, i).trim()] = line.slice(i + 1).trim(); } if (!Object.keys(v).length) v = null; break;
       case 'strings': v = [...el.querySelectorAll('.item input')].map(i => i.value.trim()).filter(Boolean); break;
       case 'objects': v = [...el.querySelectorAll('.item')].map(it => Object.fromEntries([...it.querySelectorAll('input')].map(i => [i.dataset.key, i.value.trim()]))).filter(o => Object.values(o).some(Boolean)); break;
       default: v = el.value.trim();
@@ -923,7 +923,8 @@ $('#setSave').onclick = async () => {
 
 // ---------- footer: file, Tempo, version and update ----------
 function renderFooter() {
-  $('#footer').textContent = `File: ${cfg.file}` + (cfg.tempo ? ` · Tempo: ${cfg.jiraBase}` : ` · Tempo unavailable: ${cfg.tempoError}`);
+  $('#footer').textContent = (cfg.configError ? `⚠ config.json could not be read (${cfg.configError}); running on defaults · ` : '') +
+    `File: ${cfg.file}` + (cfg.tempo ? ` · Tempo: ${cfg.jiraBase}` : ` · Tempo unavailable: ${cfg.tempoError}`);
   const u = cfg.update || {};
   $('#version').textContent = cfg.version ? `· ${cfg.version}` + (u.dev ? ' (dev)' : '') : '';
   const b = $('#updBtn');

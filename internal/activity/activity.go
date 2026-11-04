@@ -96,10 +96,10 @@ func (c *Config) Defaults(worklogFile string) {
 	if c.System.IdleAfter <= 0 {
 		c.System.IdleAfter = 180
 	}
-	if c.System.IgnoreApps == nil {
+	if len(c.System.IgnoreApps) == 0 { // an empty list from the settings form means "the defaults"
 		c.System.IgnoreApps = []string{"1Password", "Bitwarden", "KeePassXC", "Keychain Access", "Dostęp do pęku kluczy"}
 	}
-	if c.System.Meetings == nil {
+	if len(c.System.Meetings) == 0 {
 		c.System.Meetings = map[string]string{
 			"Slack":           `(?i)huddle|rozmowa`,
 			"zoom.us":         `(?i)zoom meeting|spotkanie|meeting`,

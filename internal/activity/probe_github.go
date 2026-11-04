@@ -69,13 +69,18 @@ func (p *GitHubProbe) getToken(ctx context.Context, a GitHubAccount) (string, er
 	if t := p.tokens[a.User]; t != "" {
 		return t, nil
 	}
+	// GITHUB_TOKEN and gh's token belong to one host: never send them anywhere else
+	host := "github.com"
+	if u, err := url.Parse(a.BaseURL); err == nil && u.Hostname() != "" && u.Hostname() != "api.github.com" {
+		host = u.Hostname()
+	}
 	t := a.Token
-	if t == "" {
+	if t == "" && host == "github.com" {
 		t = os.Getenv("GITHUB_TOKEN")
 	}
 	if t == "" {
 		var err error
-		if t, err = run(ctx, "gh", "auth", "token", "--user", a.User); err != nil || t == "" {
+		if t, err = run(ctx, "gh", "auth", "token", "--hostname", host, "--user", a.User); err != nil || t == "" {
 			return "", fmt.Errorf("github %s: no token (token in the settings, GITHUB_TOKEN or gh auth login)", a.User)
 		}
 	}
@@ -159,6 +164,11 @@ func (p *GitHubProbe) fetch(ctx context.Context, a GitHubAccount, now time.Time)
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 		res.Body.Close()
 		if res.StatusCode != http.StatusOK {
+			if res.StatusCode == http.StatusUnauthorized { // a rotated token: ask gh again next time
+				p.mu.Lock()
+				delete(p.tokens, a.User)
+				p.mu.Unlock()
+			}
 			return nil, fmt.Errorf("github %s: HTTP %d", a.User, res.StatusCode)
 		}
 		var events []githubEvent

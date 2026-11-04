@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ type app struct {
 	path     string
 	fileFlag string // -file wins over worklogFile
 	collect  bool
+	loadErr  error // config.json could not be read at start
 	ctx      context.Context
 	srv      *server.Server
 
@@ -42,9 +44,20 @@ func (a *app) Apply(c config.Config) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
+	a.mu.Lock()
+	broken := a.loadErr
+	a.mu.Unlock()
+	if broken != nil { // keep the unreadable file before replacing it
+		if b, err := os.ReadFile(a.path); err == nil {
+			_ = os.WriteFile(a.path+".broken", b, 0o600)
+		}
+	}
 	if err := config.Save(a.path, c); err != nil {
 		return err
 	}
+	a.mu.Lock()
+	a.loadErr = nil
+	a.mu.Unlock()
 	a.apply(c)
 	log.Printf("settings saved: %s", a.path)
 	return nil
@@ -78,6 +91,9 @@ func (a *app) apply(c config.Config) {
 	worklog.SetWeekdays(c.Weekdays)
 
 	st := &server.State{Workday: c.Workday, Describe: c.Describe, GitRepos: c.Activity.Git.Repos}
+	if a.loadErr != nil {
+		st.ConfigErr = a.loadErr.Error()
+	}
 	act := c.Activity // Defaults fills the copy only, config.json stays as written
 	tc, err := tempo.Prepare(tempo.Config{AccountEmail: c.AccountEmail, Tokens: c.Tokens, JiraBaseURL: c.JiraBaseURL, TempoBaseURL: c.TempoBaseURL})
 	if err != nil {

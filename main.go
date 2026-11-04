@@ -197,16 +197,18 @@ func cmdRun(args []string, withTray bool) error {
 		return err
 	}
 	path := configPath(*cfgFlag)
-	cfg, err := config.Load(path)
-	if err != nil {
-		return err
+	// a broken config.json must not keep the UI that can fix it from starting
+	cfg, loadErr := config.Load(path)
+	if loadErr != nil {
+		log.Printf("config: %v — starting with defaults; the file is kept until you save the settings", loadErr)
+		cfg = config.Config{}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	upd := updateManager()
 	upd.Prerelease = func() bool { return false }
-	a := &app{path: path, fileFlag: *file, collect: *collect, ctx: ctx,
+	a := &app{path: path, fileFlag: *file, collect: *collect, ctx: ctx, loadErr: loadErr,
 		srv: &server.Server{Store: worklog.NewStore(""), Web: web.FS, Updates: upd, Version: version, Token: token}}
 	a.srv.Settings = a
 	a.apply(cfg)

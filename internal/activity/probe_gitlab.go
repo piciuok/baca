@@ -120,7 +120,11 @@ func (p *GitLabProbe) token(ctx context.Context, inst GitLabInstance) (string, e
 	if ok {
 		return t, nil
 	}
-	if t = os.Getenv("GITLAB_TOKEN"); t == "" {
+	// GITLAB_TOKEN is gitlab.com's; other instances get glab's token for their own host
+	if u.Hostname() == "gitlab.com" {
+		t = os.Getenv("GITLAB_TOKEN")
+	}
+	if t == "" {
 		t, err = run(ctx, "glab", "config", "get", "token", "--host", u.Host)
 		if err != nil || t == "" {
 			return "", fmt.Errorf("gitlab %s: no token (token in the config, GITLAB_TOKEN or glab auth login)", u.Host)
@@ -153,6 +157,13 @@ func (p *GitLabProbe) get(ctx context.Context, inst GitLabInstance, path string,
 	defer res.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	if res.StatusCode != http.StatusOK {
+		if res.StatusCode == http.StatusUnauthorized && inst.Token == "" { // a rotated glab token
+			if u, err := url.Parse(inst.BaseURL); err == nil {
+				p.mu.Lock()
+				delete(p.tokens, u.Host)
+				p.mu.Unlock()
+			}
+		}
 		return nil, fmt.Errorf("gitlab %s: HTTP %d", path, res.StatusCode)
 	}
 	return res.Header, json.Unmarshal(b, out)

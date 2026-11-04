@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -98,6 +99,29 @@ func (c Config) Validate() error {
 			if !worklog.WeekdayRE.MatchString(d) {
 				return fmt.Errorf("weekdays: %q must be letters only", d)
 			}
+		}
+	}
+	// tokens go to these addresses: https only (http just for a local test server)
+	urls := map[string]string{"jiraBaseUrl": c.JiraBaseURL, "tempoBaseUrl": c.TempoBaseURL, "slack baseUrl": c.Activity.Slack.BaseURL}
+	for i, in := range c.Activity.GitLab.Instances {
+		urls[fmt.Sprintf("gitlab instance %d", i+1)] = in.BaseURL
+	}
+	for i, a := range c.Activity.GitHub.Accounts {
+		urls[fmt.Sprintf("github account %d", i+1)] = a.BaseURL
+	}
+	for i, u := range c.Activity.Calendar.URLs {
+		urls[fmt.Sprintf("calendar %d", i+1)] = strings.Replace(u, "webcal://", "https://", 1)
+	}
+	for name, raw := range urls {
+		if err := checkURL(raw); err != nil {
+			return fmt.Errorf("%s: %v", name, err)
+		}
+	}
+	// the worklog file is rewritten on every save: never let it point at a shell rc or a dotfile
+	if f := strings.TrimSpace(c.WorklogFile); f != "" {
+		base := filepath.Base(f)
+		if strings.HasPrefix(base, ".") || !(strings.HasSuffix(strings.ToLower(base), ".txt") || strings.HasSuffix(strings.ToLower(base), ".md")) {
+			return fmt.Errorf("worklog file: use a .txt or .md file that is not hidden (got %q)", base)
 		}
 	}
 	if a := c.Describe.Agent; a != "" && a != "claude" && a != "codex" {
@@ -193,27 +217,51 @@ func (c Config) Masked() Config {
 
 var maskedURL = regexp.MustCompile(`^` + regexp.QuoteMeta(Mask) + ` #(\d+)$`)
 
+// origin is the scheme and host a URL sends to (def when empty), lower-cased.
+func origin(raw, def string) string {
+	if strings.TrimSpace(raw) == "" {
+		raw = def
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
+}
+
 // Merge takes a config edited in the UI and puts the stored secrets back where it sent the mask.
-// List entries are matched by their key (GitLab by baseUrl, GitHub by user, calendars by number).
+// A stored secret is kept only while it still goes to the same place: the same scheme and host
+// (and for Jira the same account). Pointing a token at another host needs the token typed again,
+// so a changed URL can never carry a stored token away. List entries are matched by host
+// (GitLab), by host and login (GitHub) and by number (calendars, whose URL is the secret).
 func Merge(sent, stored Config) Config {
 	c := sent
-	c.Tokens.Jira = keep(sent.Tokens.Jira, stored.Tokens.Jira)
-	c.Tokens.Tempo = keep(sent.Tokens.Tempo, stored.Tokens.Tempo)
+	keepIf := func(sentTok, storedTok string, same bool) string {
+		if sentTok == Mask && !same {
+			return ""
+		}
+		return keep(sentTok, storedTok)
+	}
+	c.Tokens.Jira = keepIf(sent.Tokens.Jira, stored.Tokens.Jira,
+		origin(sent.JiraBaseURL, "") == origin(stored.JiraBaseURL, "") && strings.EqualFold(sent.AccountEmail, stored.AccountEmail))
+	c.Tokens.Tempo = keepIf(sent.Tokens.Tempo, stored.Tokens.Tempo,
+		origin(sent.TempoBaseURL, "https://api.tempo.io") == origin(stored.TempoBaseURL, "https://api.tempo.io"))
 	gl := map[string]string{}
 	for _, in := range stored.Activity.GitLab.Instances {
-		gl[in.BaseURL] = in.Token
+		gl[origin(in.BaseURL, "")] = in.Token
 	}
 	for i, in := range c.Activity.GitLab.Instances {
-		c.Activity.GitLab.Instances[i].Token = keep(in.Token, gl[in.BaseURL])
+		c.Activity.GitLab.Instances[i].Token = keep(in.Token, gl[origin(in.BaseURL, "")])
 	}
 	gh := map[string]string{}
 	for _, a := range stored.Activity.GitHub.Accounts {
-		gh[a.User] = a.Token
+		gh[strings.ToLower(a.User)+"@"+origin(a.BaseURL, "https://api.github.com")] = a.Token
 	}
 	for i, a := range c.Activity.GitHub.Accounts {
-		c.Activity.GitHub.Accounts[i].Token = keep(a.Token, gh[a.User])
+		c.Activity.GitHub.Accounts[i].Token = keep(a.Token, gh[strings.ToLower(a.User)+"@"+origin(a.BaseURL, "https://api.github.com")])
 	}
-	c.Activity.Slack.Token = keep(sent.Activity.Slack.Token, stored.Activity.Slack.Token)
+	c.Activity.Slack.Token = keepIf(sent.Activity.Slack.Token, stored.Activity.Slack.Token,
+		origin(sent.Activity.Slack.BaseURL, "https://slack.com") == origin(stored.Activity.Slack.BaseURL, "https://slack.com"))
 	var urls []string
 	for _, u := range sent.Activity.Calendar.URLs {
 		if m := maskedURL.FindStringSubmatch(u); m != nil {
@@ -228,4 +276,25 @@ func Merge(sent, stored Config) Config {
 	}
 	c.Activity.Calendar.URLs = urls
 	return c
+}
+
+// checkURL accepts https URLs, and http only for a loopback host (a local test server).
+func checkURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("not a URL: %q", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if h := u.Hostname(); h == "localhost" || h == "127.0.0.1" || h == "::1" {
+			return nil
+		}
+	}
+	return fmt.Errorf("use https (got %s://%s)", u.Scheme, u.Host)
 }
