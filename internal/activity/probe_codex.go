@@ -52,7 +52,7 @@ func (p *CodexProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 	if _, err := os.Stat(p.root); err != nil {
 		return nil, fmt.Errorf("no %s", p.root)
 	}
-	since := p.last
+	since := recent(p.last, now, p.Every())
 	p.last = now
 	var files []string
 	for _, d := range []time.Time{now.AddDate(0, 0, -1), now} { // sessions started yesterday may still run
@@ -71,7 +71,12 @@ func (p *CodexProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 		cwd, ok := p.cwd[f]
 		if !ok {
 			cwd = codexCwd(f)
-			p.cwd[f] = cwd
+			if cwd != "" { // a first line still being written: try again next scan
+				p.cwd[f] = cwd
+			}
+		}
+		if cwd == "" {
+			continue
 		}
 		name, branch := filepath.Base(cwd), ""
 		if r := RepoOf(cwd, repos); r != "" {

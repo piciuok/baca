@@ -36,7 +36,7 @@ func (p *GitProbe) Info() string {
 func (p *GitProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	since := p.last
+	since := recent(p.last, now, p.Every())
 	p.last = now
 	repos := Repos(p.cfg.Repos)
 	p.count = len(repos)
@@ -117,4 +117,14 @@ func dayFloor(t, now time.Time) time.Time {
 		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	}
 	return t
+}
+
+// recent is where a minute probe's span may start: the previous scan, but never more than two
+// intervals back - after a sleep (wall clock: the monotonic one stops while a Mac sleeps) the
+// first change would otherwise claim the whole night.
+func recent(last, now time.Time, every time.Duration) time.Time {
+	if !last.IsZero() && now.Round(0).Sub(last.Round(0)) > 2*every {
+		return now.Add(-2 * every)
+	}
+	return last
 }

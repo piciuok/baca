@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,7 +19,7 @@ import (
 type SystemProbe struct {
 	cfg     SystemConfig
 	git     GitConfig
-	sample  func(ctx context.Context, wantTitle bool) (sample, error)
+	sample  func(ctx context.Context, wantTitle bool, idleAfter time.Duration) (sample, error)
 	windows func(ctx context.Context, apps []string) ([][2]string, error)
 	meetRE  map[string]*regexp.Regexp
 
@@ -26,14 +27,16 @@ type SystemProbe struct {
 	reposAt   time.Time
 	meet      *Span // open meeting span
 	meetSince time.Time
-	meetAt    time.Time
+	meetAt    time.Time // last check of the call windows
+	meetOK    time.Time // last check that worked
 
 	mu       sync.Mutex
 	cur      *Span     // open window/idle span
 	curSince time.Time // when cur was last written
 	lastTick time.Time
-	titles   string    // "yes" | "no" | "" (unknown yet)
 	titleOff time.Time // titles failed: try again after this
+
+	titles atomic.Value // "yes" | "no": read by Info without waiting for a running tick
 }
 
 func NewSystemProbe(cfg SystemConfig, git GitConfig) *SystemProbe {
@@ -50,12 +53,11 @@ func (p *SystemProbe) Name() string         { return "system" }
 func (p *SystemProbe) Every() time.Duration { return time.Duration(p.cfg.Interval) * time.Second }
 
 func (p *SystemProbe) Info() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.titles == "" {
+	t, _ := p.titles.Load().(string)
+	if t == "" {
 		return osName
 	}
-	return fmt.Sprintf("%s · window titles: %s", osName, p.titles)
+	return fmt.Sprintf("%s · window titles: %s", osName, t)
 }
 
 func (p *SystemProbe) Flush(now time.Time) []Span {
@@ -64,13 +66,24 @@ func (p *SystemProbe) Flush(now time.Time) []Span {
 	return append(p.close(now), p.closeMeet(now)...)
 }
 
+// endAt is where a span of day date that ends at end stops: past midnight it ends at 23:59:59
+// of its own day, so the last piece of a day is never lost.
+func endAt(date string, end time.Time) string {
+	if dayOf(end) != date {
+		return "23:59:59"
+	}
+	return clock(end)
+}
+
 func (p *SystemProbe) closeMeet(end time.Time) []Span {
 	m := p.meet
 	p.meet = nil
-	if m == nil || dayOf(end) != m.Date || clock(end) <= m.From {
+	if m == nil {
 		return nil
 	}
-	m.To = clock(end)
+	if m.To = endAt(m.Date, end); m.To <= m.From {
+		return nil
+	}
 	return []Span{*m}
 }
 
@@ -108,27 +121,44 @@ func containsWord(s, w string) bool {
 	}
 }
 
-// meetings checks the call windows every 30 s and keeps the meeting span open while one is on.
-func (p *SystemProbe) meetings(ctx context.Context, now time.Time) []Span {
-	if len(p.meetRE) == 0 || now.Sub(p.meetAt) < 30*time.Second {
-		if p.meet != nil && now.Sub(p.meetSince) >= time.Minute {
-			p.meet.To = clock(now)
-			piece := *p.meet
-			p.meet.From, p.meetSince = p.meet.To, now
-			return []Span{piece}
-		}
-		return nil
-	}
-	p.meetAt = now
+// meetDue tells whether the call windows should be checked now (every 30 s).
+func (p *SystemProbe) meetDue(now time.Time) bool {
+	return len(p.meetRE) > 0 && now.Sub(p.meetAt) >= 30*time.Second
+}
+
+func (p *SystemProbe) meetApps() []string {
 	apps := make([]string, 0, len(p.meetRE))
 	for a := range p.meetRE {
 		apps = append(apps, a)
 	}
 	sort.Strings(apps)
-	wins, err := p.windows(ctx, apps)
-	if err != nil {
+	return apps
+}
+
+// meetings keeps the meeting span open while a call window is on. wins is the result of the
+// check made this tick (checked=false: no check was due). A failing check ends an open meeting at
+// the last check that worked, so a broken osascript never stretches a call for hours.
+func (p *SystemProbe) meetings(now time.Time, checked bool, wins [][2]string, err error) []Span {
+	piece := func() []Span {
+		if p.meet != nil && now.Sub(p.meetSince) >= time.Minute && p.meet.Date == dayOf(now) {
+			p.meet.To = clock(now)
+			out := *p.meet
+			p.meet.From, p.meetSince = p.meet.To, now
+			return []Span{out}
+		}
 		return nil
 	}
+	if !checked {
+		return piece()
+	}
+	p.meetAt = now
+	if err != nil {
+		if p.meet != nil && !p.meetOK.IsZero() {
+			return p.closeMeet(p.meetOK)
+		}
+		return nil
+	}
+	p.meetOK = now
 	var found *Span
 	for _, w := range wins {
 		if re := p.meetRE[w[0]]; re != nil && re.MatchString(w[1]) {
@@ -137,13 +167,7 @@ func (p *SystemProbe) meetings(ctx context.Context, now time.Time) []Span {
 		}
 	}
 	if found != nil && p.meet != nil && p.meet.App == found.App && p.meet.Title == found.Title && p.meet.Date == found.Date {
-		if now.Sub(p.meetSince) >= time.Minute {
-			p.meet.To = clock(now)
-			piece := *p.meet
-			p.meet.From, p.meetSince = p.meet.To, now
-			return []Span{piece}
-		}
-		return nil
+		return piece()
 	}
 	out := p.closeMeet(now)
 	if found != nil {
@@ -157,35 +181,50 @@ func (p *SystemProbe) meetings(ctx context.Context, now time.Time) []Span {
 func (p *SystemProbe) close(end time.Time) []Span {
 	c := p.cur
 	p.cur = nil
-	if c == nil || dayOf(end) != c.Date || clock(end) <= c.From {
+	if c == nil {
 		return nil
 	}
-	c.To = clock(end)
+	if c.To = endAt(c.Date, end); c.To <= c.From {
+		return nil
+	}
 	return []Span{*c}
 }
 
 func (p *SystemProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
+	idleAfter := time.Duration(p.cfg.IdleAfter) * time.Second
 	p.mu.Lock()
 	wantTitle := now.After(p.titleOff)
+	checkMeet := p.meetDue(now)
 	p.mu.Unlock()
 
-	s, err := p.sample(ctx, wantTitle)
+	// the commands run outside the lock, so Flush and the status never wait for them
+	s, err := p.sample(ctx, wantTitle, idleAfter)
+	var wins [][2]string
+	var winErr error
+	if checkMeet {
+		wins, winErr = p.windows(ctx, p.meetApps())
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var out []Span
-	// the machine slept or the process stalled: the open span ends at the last tick
-	if !p.lastTick.IsZero() && now.Sub(p.lastTick) > 3*p.Every() {
+	// the machine slept or the process stalled: the open span ends at the last tick. Wall clocks
+	// (Round(0)): the monotonic clock stops while a Mac sleeps, so it would hide the gap.
+	if !p.lastTick.IsZero() && now.Round(0).Sub(p.lastTick.Round(0)) > 3*p.Every() {
 		out = append(out, p.close(p.lastTick)...)
+		if p.meet != nil {
+			out = append(out, p.closeMeet(p.lastTick)...)
+		}
 	}
 	p.lastTick = now
 	if err != nil {
 		return append(out, p.close(now)...), err
 	}
-	if wantTitle {
-		p.titles = "yes"
+	if wantTitle && s.Idle < idleAfter { // an idle tick reads no title: it says nothing
+		p.titles.Store("yes")
 		if s.TitleErr != nil {
-			p.titles, p.titleOff = "no", now.Add(5*time.Minute)
+			p.titles.Store("no")
+			p.titleOff = now.Add(5 * time.Minute)
 			err = s.TitleErr
 		}
 	}
@@ -195,14 +234,14 @@ func (p *SystemProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 		}
 	}
 
-	out = append(out, p.meetings(ctx, now)...)
+	out = append(out, p.meetings(now, checkMeet, wins, winErr)...)
 	next := Span{Date: dayOf(now), Kind: "window", App: s.App, Title: s.Title}
 	if r := p.repoIn(s.Title, now); r != "" {
 		next.Repo = filepath.Base(r)
 		_, next.Branch = GitInfo(r)
 	}
 	from := now
-	if s.Idle >= time.Duration(p.cfg.IdleAfter)*time.Second {
+	if s.Idle >= idleAfter {
 		next.Kind, next.Title, next.Repo, next.Branch = "idle", "", "", ""
 		from = now.Add(-s.Idle) // idle began at the last input, not when we noticed
 	}

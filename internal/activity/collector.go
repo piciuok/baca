@@ -30,9 +30,10 @@ type ProbeStatus struct {
 }
 
 type Collector struct {
-	Log    Log
-	Probes []Probe
-	Now    func() time.Time
+	Log       Log
+	Probes    []Probe
+	Now       func() time.Time
+	Retention int // days of activity to keep; 0 keeps everything
 
 	mu     sync.Mutex
 	status map[string]*ProbeStatus
@@ -48,12 +49,14 @@ func NewCollector(l Log, probes ...Probe) *Collector {
 
 func (c *Collector) Status() []ProbeStatus {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	out := []ProbeStatus{}
 	for _, p := range c.Probes {
-		s := *c.status[p.Name()]
-		s.Info = p.Info()
-		out = append(out, s)
+		out = append(out, *c.status[p.Name()])
+	}
+	c.mu.Unlock()
+	// Info outside c.mu: a probe in the middle of a scan never holds up the others' statuses
+	for i, p := range c.Probes {
+		out[i].Info = p.Info()
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -62,6 +65,22 @@ func (c *Collector) Status() []ProbeStatus {
 // Run starts every probe in its own loop and blocks until ctx is done.
 func (c *Collector) Run(ctx context.Context) {
 	var wg sync.WaitGroup
+	if c.Retention > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				if n, err := c.Log.Prune(c.Now().AddDate(0, 0, -c.Retention)); err == nil && n > 0 {
+					log.Printf("activity: removed %d files older than %d days", n, c.Retention)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(24 * time.Hour):
+				}
+			}
+		}()
+	}
 	for _, p := range c.Probes {
 		wg.Add(1)
 		go func(p Probe) {

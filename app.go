@@ -107,6 +107,7 @@ func (a *app) apply(c config.Config) {
 	st.Activity = activity.Log{Dir: act.Dir}
 	if probes := act.Probes(); a.collect && len(probes) > 0 {
 		st.Collector = activity.NewCollector(st.Activity, probes...)
+		st.Collector.Retention = act.RetentionDays
 		ctx, cancel := context.WithCancel(a.ctx)
 		done := make(chan struct{})
 		go func() { st.Collector.Run(ctx); close(done) }()

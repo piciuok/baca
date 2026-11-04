@@ -21,8 +21,15 @@ const titleScript = `tell application "System Events" to get name of front windo
 // probe reads the front app with lsappinfo (no permission needed), the idle time from
 // IOHIDSystem and, when wantTitle, the front window title through System Events, which
 // needs the Accessibility permission for the app that started baca.
-func probe(ctx context.Context, wantTitle bool) (sample, error) {
+func probe(ctx context.Context, wantTitle bool, idleAfter time.Duration) (sample, error) {
 	var s sample
+	// idle first: while nobody types, the title is not recorded, so osascript is not run
+	if out, err := run(ctx, "ioreg", "-c", "IOHIDSystem", "-r", "-k", "HIDIdleTime", "-d", "1"); err == nil {
+		if m := idleRE.FindStringSubmatch(out); m != nil {
+			ns, _ := strconv.ParseInt(m[1], 10, 64)
+			s.Idle = time.Duration(ns)
+		}
+	}
 	asn, err := run(ctx, "lsappinfo", "front")
 	if err != nil {
 		return s, err
@@ -34,13 +41,7 @@ func probe(ctx context.Context, wantTitle bool) (sample, error) {
 	if m := lsName.FindStringSubmatch(info); m != nil {
 		s.App = m[1]
 	}
-	if out, err := run(ctx, "ioreg", "-c", "IOHIDSystem", "-d", "4"); err == nil {
-		if m := idleRE.FindStringSubmatch(out); m != nil {
-			ns, _ := strconv.ParseInt(m[1], 10, 64)
-			s.Idle = time.Duration(ns)
-		}
-	}
-	if wantTitle && s.App != "" {
+	if wantTitle && s.App != "" && s.Idle < idleAfter {
 		t, err := run(ctx, "osascript", "-e", titleScript)
 		var pe *probeError
 		switch {
@@ -48,6 +49,8 @@ func probe(ctx context.Context, wantTitle bool) (sample, error) {
 			s.Title = t
 		case errors.As(err, &pe) && (strings.Contains(pe.msg, "-1719") || strings.Contains(pe.msg, "-25211") || strings.Contains(strings.ToLower(pe.msg), "assistive")):
 			s.TitleErr = errors.New("no Accessibility permission (System Settings → Privacy & Security → Accessibility) for the app baca runs from")
+		case errors.As(err, &pe) && (strings.Contains(pe.msg, "-1743") || strings.Contains(strings.ToLower(pe.msg), "not authorized")):
+			s.TitleErr = errors.New("no permission to ask System Events (System Settings → Privacy & Security → Automation → System Events) for the app baca runs from")
 		default:
 			// windowless apps (Finder desktop, menu-bar apps) have no front window - not an error
 		}

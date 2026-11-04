@@ -45,7 +45,7 @@ func (p *ClaudeProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 	if _, err := os.Stat(p.root); err != nil {
 		return nil, fmt.Errorf("no %s", p.root)
 	}
-	since := p.last
+	since := recent(p.last, now, p.Every())
 	p.last = now
 	repos := map[string]string{}
 	for _, r := range Repos(p.git.Repos) {

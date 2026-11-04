@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,17 +50,19 @@ func clock(t time.Time) string { return t.Format("15:04:05") }
 
 // Config is the "activity" section of config.json.
 type Config struct {
-	Enabled  *bool          `json:"enabled"` // default true
-	Dir      string         `json:"dir"`     // default: "activity" next to the worklog file
-	System   SystemConfig   `json:"system"`
-	Git      GitConfig      `json:"git"`
-	Claude   ClaudeConfig   `json:"claude"`
-	Codex    CodexConfig    `json:"codex"`
-	GitLab   GitLabConfig   `json:"gitlab"`
-	Jira     JiraConfig     `json:"jira"`
-	GitHub   GitHubConfig   `json:"github"`
-	Calendar CalendarConfig `json:"calendar"`
-	Slack    SlackConfig    `json:"slack"`
+	Enabled *bool  `json:"enabled"` // default true
+	Dir     string `json:"dir"`     // default: "activity" next to the worklog file
+	// RetentionDays deletes activity files older than this many days; 0 keeps everything.
+	RetentionDays int            `json:"retentionDays"`
+	System        SystemConfig   `json:"system"`
+	Git           GitConfig      `json:"git"`
+	Claude        ClaudeConfig   `json:"claude"`
+	Codex         CodexConfig    `json:"codex"`
+	GitLab        GitLabConfig   `json:"gitlab"`
+	Jira          JiraConfig     `json:"jira"`
+	GitHub        GitHubConfig   `json:"github"`
+	Calendar      CalendarConfig `json:"calendar"`
+	Slack         SlackConfig    `json:"slack"`
 
 	JiraAuth JiraAuth `json:"-"` // filled from the Jira/Tempo credentials of config.json
 }
@@ -265,49 +268,69 @@ func (l Log) readLocal(date string) ([]Span, error) {
 		return nil, err
 	}
 	defer f.Close()
-	var out []Span
+	// times are parsed once; screen spans (window/idle) arrive in time order, so a later span
+	// can only overlap the screen spans at the end of the list: the trim walks back from there
+	type item struct {
+		s          Span
+		start, end int
+	}
+	var out []item
+	var screens []int // indexes into out
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64*1024), 1<<20)
 	for sc.Scan() {
 		var s Span
-		if json.Unmarshal(sc.Bytes(), &s) != nil || s.End() <= s.Start() {
-			continue // a torn last line after a crash, or an empty piece
+		if json.Unmarshal(sc.Bytes(), &s) != nil {
+			continue // a torn last line after a crash
+		}
+		start, end := s.Start(), s.End()
+		if end <= start {
+			continue // an empty piece
 		}
 		if screen(s) {
-			for i := range out {
-				if screen(out[i]) && out[i].End() > s.Start() && out[i].Start() < s.End() {
-					if out[i].Start() >= s.Start() {
-						out[i].To = out[i].From // fully covered: dropped below
-					} else {
-						out[i].To = s.From
+			for k := len(screens) - 1; k >= 0; k-- {
+				o := &out[screens[k]]
+				if o.end <= start {
+					if o.end > o.start { // a live span wholly before this one: so is everything earlier
+						break
 					}
+					continue
+				}
+				if o.start >= start {
+					o.end = o.start // fully covered: dropped below
+				} else {
+					o.end = start
 				}
 			}
 		}
-		if n := len(out); n > 0 {
-			// merge with the latest span of the same state that ends where this one starts
-			merged := false
-			for i := n - 1; i >= 0 && i >= n-8; i-- {
-				if sameState(out[i], s) && out[i].End() >= s.Start()-1 && out[i].End() <= s.End() {
-					out[i].To = s.To
-					merged = true
-					break
-				}
-			}
-			if merged {
-				continue
+		// merge with the latest span of the same state that ends where this one starts
+		merged := false
+		for i := len(out) - 1; i >= 0 && i >= len(out)-8; i-- {
+			if sameState(out[i].s, s) && out[i].end >= start-1 && out[i].end <= end {
+				out[i].end = end
+				merged = true
+				break
 			}
 		}
-		out = append(out, s)
+		if merged {
+			continue
+		}
+		if screen(s) {
+			screens = append(screens, len(out))
+		}
+		out = append(out, item{s, start, end})
 	}
-	kept := out[:0]
-	for _, s := range out {
-		if s.End() > s.Start() {
-			kept = append(kept, s)
+	kept := make([]Span, 0, len(out))
+	for _, it := range out {
+		if it.end > it.start {
+			it.s.From, it.s.To = secsClock(it.start), secsClock(it.end)
+			kept = append(kept, it.s)
 		}
 	}
 	return kept, sc.Err()
 }
+
+func secsClock(s int) string { return fmt.Sprintf("%02d:%02d:%02d", s/3600, s/60%60, s%60) }
 
 func screen(s Span) bool { return s.Kind == "window" || s.Kind == "idle" }
 
@@ -323,4 +346,22 @@ func expandHome(p string) string {
 		}
 	}
 	return p
+}
+
+// Prune removes the day files (and snapshots) of days before cutoff.
+func (l Log) Prune(cutoff time.Time) (int, error) {
+	files, err := filepath.Glob(filepath.Join(l.Dir, "????-??-??*.jsonl"))
+	if err != nil {
+		return 0, err
+	}
+	limit := dayOf(cutoff)
+	n := 0
+	for _, f := range files {
+		if d := filepath.Base(f)[:10]; d < limit {
+			if os.Remove(f) == nil {
+				n++
+			}
+		}
+	}
+	return n, nil
 }

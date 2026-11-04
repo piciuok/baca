@@ -2,6 +2,7 @@ package activity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -87,7 +88,7 @@ func TestSystemProbe(t *testing.T) {
 	c.Now = func() time.Time { return now }
 	var idle time.Duration
 	app, title := "Editor", "a.go"
-	p.sample = func(ctx context.Context, wantTitle bool) (sample, error) {
+	p.sample = func(ctx context.Context, wantTitle bool, idleAfter time.Duration) (sample, error) {
 		return sample{App: app, Title: title, Idle: idle}, nil
 	}
 	step := func(n int) {
@@ -199,7 +200,7 @@ func TestSystemProbeIDEAndMeeting(t *testing.T) {
 	now := time.Date(2026, 11, 4, 10, 0, 0, 0, time.Local)
 	c.Now = func() time.Time { return now }
 	title, idle, huddle := "app-admin – src/Export.php", time.Duration(0), false
-	p.sample = func(context.Context, bool) (sample, error) {
+	p.sample = func(context.Context, bool, time.Duration) (sample, error) {
 		return sample{App: "PhpStorm", Title: title, Idle: idle}, nil
 	}
 	p.windows = func(context.Context, []string) ([][2]string, error) {
@@ -451,5 +452,81 @@ func TestSlackProbe(t *testing.T) {
 	p.cfg.Token = "bad"
 	if _, err := p.Tick(context.Background(), at); err == nil || err.Error() != "slack: invalid_auth" {
 		t.Fatal(err)
+	}
+}
+
+// a long day: 7,500 lines of window pieces with repo spans in between and idle reaching back
+func BenchmarkRead(b *testing.B) {
+	l := Log{Dir: b.TempDir()}
+	var spans []Span
+	t := 6 * 3600
+	for i := 0; i < 7500; i++ {
+		from, to := t, t+5
+		switch {
+		case i%40 == 39: // idle that reaches back over the last pieces
+			spans = append(spans, Span{Date: "2026-11-04", From: hms(from - 60), To: hms(to + 120), Kind: "idle", App: "Editor"})
+			t += 120
+		case i%7 == 0:
+			spans = append(spans, Span{Date: "2026-11-04", From: hms(from - 60), To: hms(to), Kind: "repo", Repo: "app"})
+		default:
+			spans = append(spans, Span{Date: "2026-11-04", From: hms(from), To: hms(to), Kind: "window", App: "Editor", Title: fmt.Sprint("file ", i%5)})
+		}
+		t += 5
+	}
+	l.Append(spans...)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l.Read("2026-11-04")
+	}
+}
+
+func hms(s int) string { return fmt.Sprintf("%02d:%02d:%02d", s/3600, s/60%60, s%60) }
+
+func TestSystemProbeMidnightAndBrokenMeetingCheck(t *testing.T) {
+	p := NewSystemProbe(SystemConfig{Interval: 5, IdleAfter: 180, Meetings: map[string]string{"Slack": `(?i)huddle`}}, GitConfig{})
+	c := NewCollector(Log{Dir: t.TempDir()}, p)
+	now := time.Date(2026, 11, 4, 23, 50, 0, 0, time.Local)
+	c.Now = func() time.Time { return now }
+	p.sample = func(context.Context, bool, time.Duration) (sample, error) { return sample{App: "Editor", Title: "a.go"}, nil }
+	failing := false
+	p.windows = func(context.Context, []string) ([][2]string, error) {
+		if failing {
+			return nil, errors.New("osascript timed out")
+		}
+		return [][2]string{{"Slack", "Huddle: #team"}}, nil
+	}
+	step := func(n int) {
+		for range n {
+			c.tick(context.Background(), p)
+			now = now.Add(5 * time.Second)
+		}
+	}
+	step(60) // 23:50-23:55 in a huddle
+	failing = true
+	step(60) // 23:55-00:00: the check fails, the huddle must stop at 23:55
+	step(12) // past midnight
+	c.write(p, p.Flush(now))
+	day, _ := c.Log.Read("2026-11-04")
+	var meetingEnd, windowEnd string
+	for _, s := range day {
+		switch s.Kind {
+		case "meeting":
+			meetingEnd = s.To
+		case "window":
+			windowEnd = s.To
+		}
+	}
+	if meetingEnd != "23:54:30" || windowEnd != "23:59:59" { // the last check that worked was 23:54:30
+		t.Fatalf("meeting to %s (want 23:54:30), window to %s (want 23:59:59): %+v", meetingEnd, windowEnd, day)
+	}
+}
+
+func TestRecentCapsTheReachBack(t *testing.T) {
+	now := time.Date(2026, 11, 4, 8, 30, 0, 0, time.Local)
+	if got := recent(now.Add(-14*time.Hour), now, time.Minute); !got.Equal(now.Add(-2 * time.Minute)) {
+		t.Fatal(got)
+	}
+	if got := recent(now.Add(-time.Minute), now, time.Minute); !got.Equal(now.Add(-time.Minute)) {
+		t.Fatal(got)
 	}
 }
