@@ -487,7 +487,9 @@ func TestSystemProbeMidnightAndBrokenMeetingCheck(t *testing.T) {
 	c := NewCollector(Log{Dir: t.TempDir()}, p)
 	now := time.Date(2026, 11, 4, 23, 50, 0, 0, time.Local)
 	c.Now = func() time.Time { return now }
-	p.sample = func(context.Context, bool, time.Duration) (sample, error) { return sample{App: "Editor", Title: "a.go"}, nil }
+	p.sample = func(context.Context, bool, time.Duration) (sample, error) {
+		return sample{App: "Editor", Title: "a.go"}, nil
+	}
 	failing := false
 	p.windows = func(context.Context, []string) ([][2]string, error) {
 		if failing {
@@ -528,5 +530,64 @@ func TestRecentCapsTheReachBack(t *testing.T) {
 	}
 	if got := recent(now.Add(-time.Minute), now, time.Minute); !got.Equal(now.Add(-time.Minute)) {
 		t.Fatal(got)
+	}
+}
+
+func TestCalendarZonesMonthlyAndDurations(t *testing.T) {
+	ics := strings.ReplaceAll(`BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:india
+DTSTART;TZID=Asia/Kolkata:20260603T143000
+DURATION:PT30M
+RRULE:FREQ=WEEKLY;BYDAY=WE
+SUMMARY:Sync with India
+END:VEVENT
+BEGIN:VEVENT
+UID:utc
+DTSTART:20260603T080000Z
+DTEND:20260603T081500Z
+RRULE:FREQ=WEEKLY;BYDAY=WE
+SUMMARY:UTC weekly
+END:VEVENT
+BEGIN:VEVENT
+UID:monthly
+DTSTART;TZID=Europe/Warsaw:20260105T120000
+DTEND;TZID=Europe/Warsaw:20260105T130000
+RRULE:FREQ=MONTHLY;BYDAY=1MO
+SUMMARY:First Monday
+END:VEVENT
+BEGIN:VEVENT
+UID:long
+DTSTART;TZID=Europe/Warsaw:20261103T220000
+DURATION:P1DT1H
+SUMMARY:Offsite
+END:VEVENT
+BEGIN:VEVENT
+UID:declined
+DTSTART:20261104T140000Z
+DTEND:20261104T150000Z
+SUMMARY:Not going
+ATTENDEE;CN="Doe: Jan";PARTSTAT=DECLINED:mailto:me@example.com
+END:VEVENT
+END:VCALENDAR
+`, "\n", "\r\n")
+	waw, _ := time.LoadLocation("Europe/Warsaw")
+	var got []string
+	for _, s := range CalendarSpans(ics, "me@example.com", time.Date(2026, 11, 4, 18, 0, 0, 0, waw)) {
+		got = append(got, s.Date[8:]+" "+s.From[:5]+"-"+s.To[:5]+" "+s.Title)
+	}
+	want := "03 22:00-23:59 Offsite | 04 00:00-23:00 Offsite | 04 09:00-09:15 UTC weekly | 04 10:00-10:30 Sync with India"
+	if strings.Join(got, " | ") != want {
+		t.Fatalf("got  %s\nwant %s", strings.Join(got, " | "), want)
+	}
+	// the first Monday of November 2026 is the 2nd
+	got = nil
+	for _, s := range CalendarSpans(ics, "", time.Date(2026, 11, 2, 18, 0, 0, 0, waw)) {
+		if s.Title == "First Monday" {
+			got = append(got, s.Date+" "+s.From[:5])
+		}
+	}
+	if strings.Join(got, ",") != "2026-11-02 12:00" {
+		t.Fatalf("monthly: %v", got)
 	}
 }

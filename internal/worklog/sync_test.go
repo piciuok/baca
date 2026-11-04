@@ -63,3 +63,16 @@ func TestSync(t *testing.T) {
 		t.Fatalf("%v", out)
 	}
 }
+
+func TestSyncAdoptsAnIDlessLoggedEntry(t *testing.T) {
+	local := []Entry{{Start: 540, End: 600, Ticket: "ABC-1", Desc: "x", Logged: true}}
+	remote := []Entry{lg(540, 600, "ABC-1", "x", "5")}
+	plan := PlanSync(local, remote)
+	if len(plan) != 1 || plan[0].Kind != "changed" || len(plan[0].Trims) != 0 {
+		t.Fatalf("%+v", plan)
+	}
+	out, err := ApplySync(local, plan, map[string]bool{"5": true})
+	if err != nil || len(out) != 1 || out[0].WorklogID != "5" || !out[0].Logged {
+		t.Fatalf("%v %+v", err, out)
+	}
+}

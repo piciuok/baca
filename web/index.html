@@ -363,9 +363,16 @@ async function flush() {
   saving = api('PUT', `/api/days/${d}`, { base: hash, entries: blocks.map(toEntry) })
     .then(v => { if (d === day) { hash = v.hash; dayHeader = v.header; } setSaveState('saved'); refreshDays(); renderOutput(); })
     .catch(e => {
+      if (e.status === 423 && d === day) {   // logging to Tempo is running: keep the change, retry
+        setSaveState('waiting for Tempo…'); dirty = true; setTimeout(changed, 2000); return;
+      }
       setSaveState('save failed', true);
-      if (e.data?.day && d === day) { fromView(e.data.day); history = []; future = []; render(); }
-      toast(e.status === 409 ? 'The day changed in the file – loaded the current version.' : 'Not saved: ' + e.message, true);
+      if (e.data?.day && d === day) {
+        // the file's version wins, but your edit stays one ⌘Z away
+        history.push(clone(blocks)); future = [];
+        fromView(e.data.day); render();
+      }
+      toast(e.status === 409 ? 'The day changed in the file – loaded the current version (⌘Z brings yours back).' : 'Not saved: ' + e.message + (e.data?.day ? ' (⌘Z brings your edit back)' : ''), true);
     })
     .finally(() => { saving = null; });
   await saving;
@@ -1353,7 +1360,7 @@ async function openSync() {
     li.append(box);
     li.insertAdjacentHTML('beforeend', `<span class="${cls}">${icon}</span><span></span><span class="${cls}"></span>`);
     li.children[2].textContent = `#${c.id} ${brief(main)}`;
-    li.children[3].textContent = c.kind === 'conflict' ? 'conflict: ' + c.reason + ' – fix it in Tempo' : what;
+    li.children[3].textContent = c.kind === 'conflict' ? 'conflict: ' + c.reason + ' – fix it in Tempo' : (c.reason || what);
     list.appendChild(li);
     const sub = text => { const s = document.createElement('li'); s.className = 'sub muted'; s.textContent = text; list.appendChild(s); };
     if (c.kind === 'changed') sub(`file:  ${brief(c.local)}`);

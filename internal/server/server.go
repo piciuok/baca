@@ -259,12 +259,26 @@ func (s *Server) getDay(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
+// wallClock is HH:MM on the day as the clock shows it: midnight plus minutes would be an hour off
+// on the days the clocks change.
+func wallClock(date time.Time, minutes int) time.Time {
+	return time.Date(date.Year(), date.Month(), date.Day(), minutes/60, minutes%60, 0, 0, date.Location())
+}
+
 func (s *Server) putDay(w http.ResponseWriter, r *http.Request) {
 	date, err := parseDate(r)
 	if err != nil {
 		fail(w, http.StatusBadRequest, err, nil)
 		return
 	}
+	// while worklogs go to Tempo the day must not change under them (a second tab, an editor
+	// save through the API): the run marks entries by their times, a changed one would be logged
+	// again. 423: the UI keeps the change and retries.
+	if !s.logMu.TryLock() {
+		fail(w, http.StatusLocked, errors.New("logging to Tempo is running; the change is kept and saved after it"), nil)
+		return
+	}
+	defer s.logMu.Unlock()
 	var body struct {
 		Base    string          `json:"base"`
 		Entries []worklog.Entry `json:"entries"`
@@ -368,7 +382,7 @@ func (s *Server) logEntry(ctx context.Context, tc *tempo.Client, date time.Time,
 		res.Status, res.Error = "error", err.Error()
 		return res
 	}
-	start := date.Add(time.Duration(e.Start) * time.Minute)
+	start := wallClock(date, e.Start)
 	secs := e.Minutes() * 60
 	for i, x := range *existing {
 		if x.IssueID == issueID && x.StartDate == start.Format("2006-01-02") && x.StartTime == start.Format("15:04:05") && x.Seconds == secs {
@@ -478,7 +492,7 @@ func (s *Server) updateLogged(w http.ResponseWriter, r *http.Request) {
 		}
 		ne := e
 		ne.Ticket, ne.Desc = ticket, desc
-		nw := tempo.NewWorklog{AccountID: account, IssueID: issueID, Start: date.Add(time.Duration(e.Start) * time.Minute), Seconds: e.Minutes() * 60, Description: ne.Description()}
+		nw := tempo.NewWorklog{AccountID: account, IssueID: issueID, Start: wallClock(date, e.Start), Seconds: e.Minutes() * 60, Description: ne.Description()}
 		if err := tc.Update(ctx, e.WorklogID, nw, ticket != e.Ticket); err != nil {
 			return worklog.DayView{}, http.StatusBadGateway, fmt.Errorf("Tempo rejected the change: %w", err)
 		}

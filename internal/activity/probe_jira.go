@@ -109,17 +109,32 @@ func (p *JiraProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 	start := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, now.Location())
 	jf, jt := from.Format("2006/01/02"), now.AddDate(0, 0, 1).Format("2006/01/02")
 	jql := fmt.Sprintf(`issuekey in updatedBy("%s", "%s", "%s") OR (updated >= "%s" AND (assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser()))`, acc, jf, jt, jf)
-	var found struct {
-		Issues []struct {
-			Key    string `json:"key"`
-			Fields struct {
-				Summary string `json:"summary"`
-			} `json:"fields"`
-		} `json:"issues"`
+	type issue struct {
+		Key    string `json:"key"`
+		Fields struct {
+			Summary string `json:"summary"`
+		} `json:"fields"`
 	}
-	if err := p.call(ctx, http.MethodPost, "/rest/api/3/search/jql", map[string]any{"jql": jql, "fields": []string{"summary"}, "maxResults": 100}, &found); err != nil {
-		return nil, err
+	var found struct{ Issues []issue }
+	token := ""
+	for page := 0; page < 5; page++ { // up to 500 issues touched in two days
+		var res struct {
+			Issues []issue `json:"issues"`
+			Next   string  `json:"nextPageToken"`
+		}
+		body := map[string]any{"jql": jql, "fields": []string{"summary"}, "maxResults": 100}
+		if token != "" {
+			body["nextPageToken"] = token
+		}
+		if err := p.call(ctx, http.MethodPost, "/rest/api/3/search/jql", body, &res); err != nil {
+			return nil, err
+		}
+		found.Issues = append(found.Issues, res.Issues...)
+		if token = res.Next; token == "" {
+			break
+		}
 	}
+	var errs []string
 	var out []Span
 	add := func(key, summary, what string, at time.Time, lead time.Duration) {
 		at = at.In(now.Location())
@@ -134,6 +149,7 @@ func (p *JiraProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 	}
 	for _, is := range found.Issues {
 		var ch struct {
+			Total  int `json:"total"`
 			Values []struct {
 				Author struct {
 					AccountID string `json:"accountId"`
@@ -146,8 +162,17 @@ func (p *JiraProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 				} `json:"items"`
 			} `json:"values"`
 		}
-		if err := p.call(ctx, http.MethodGet, "/rest/api/3/issue/"+url.PathEscape(is.Key)+"/changelog?maxResults=100", nil, &ch); err != nil {
-			return nil, err
+		// the changelog is oldest first: on a long-lived issue today's changes sit on the last page
+		path := "/rest/api/3/issue/" + url.PathEscape(is.Key) + "/changelog?maxResults=100"
+		if err := p.call(ctx, http.MethodGet, path, nil, &ch); err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		if ch.Total > 100 {
+			if err := p.call(ctx, http.MethodGet, fmt.Sprintf("%s&startAt=%d", path, ch.Total-100), nil, &ch); err != nil {
+				errs = append(errs, err.Error())
+				continue
+			}
 		}
 		for _, v := range ch.Values {
 			if v.Author.AccountID != acc {
@@ -177,7 +202,8 @@ func (p *JiraProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 			} `json:"comments"`
 		}
 		if err := p.call(ctx, http.MethodGet, "/rest/api/3/issue/"+url.PathEscape(is.Key)+"/comment?maxResults=100&orderBy=-created", nil, &cm); err != nil {
-			return nil, err
+			errs = append(errs, err.Error())
+			continue
 		}
 		for _, c := range cm.Comments {
 			if c.Author.AccountID == acc {
@@ -188,5 +214,8 @@ func (p *JiraProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 	p.mu.Lock()
 	p.count = len(out)
 	p.mu.Unlock()
+	if len(errs) > 0 { // one issue that fails (no permission, deleted) does not hide the others
+		return out, fmt.Errorf("jira: %d issue(s) could not be read: %s", len(errs), errs[0])
+	}
 	return out, nil
 }

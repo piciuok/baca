@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -127,11 +128,11 @@ func parseICS(text string) []icsEvent {
 		case depth > 0:
 			continue
 		}
-		head, value, ok := strings.Cut(line, ":")
+		head, value, ok := cutOutsideQuotes(line, ':') // CN="Doe: Jan" is not the value
 		if !ok {
 			continue
 		}
-		parts := strings.Split(head, ";")
+		parts := splitOutsideQuotes(head, ';')
 		pr := icsProp{params: map[string]string{}, value: value}
 		for _, p := range parts[1:] {
 			if k, v, ok := strings.Cut(p, "="); ok {
@@ -144,6 +145,47 @@ func parseICS(text string) []icsEvent {
 	return events
 }
 
+func cutOutsideQuotes(s string, sep byte) (string, string, bool) {
+	q := false
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '"':
+			q = !q
+		case s[i] == sep && !q:
+			return s[:i], s[i+1:], true
+		}
+	}
+	return s, "", false
+}
+
+func splitOutsideQuotes(s string, sep byte) []string {
+	var out []string
+	for {
+		a, b, ok := cutOutsideQuotes(s, sep)
+		out = append(out, a)
+		if !ok {
+			return out
+		}
+		s = b
+	}
+}
+
+var isoDuration = regexp.MustCompile(`^([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$`)
+
+// parseDuration reads an iCal DURATION: PT1H30M, P1D, P1DT2H, P2W.
+func parseDuration(v string) (time.Duration, bool) {
+	m := isoDuration.FindStringSubmatch(strings.ToUpper(strings.TrimSpace(v)))
+	if m == nil {
+		return 0, false
+	}
+	n := func(i int) time.Duration { x, _ := strconv.Atoi(m[i]); return time.Duration(x) }
+	d := n(2)*7*24*time.Hour + n(3)*24*time.Hour + n(4)*time.Hour + n(5)*time.Minute + n(6)*time.Second
+	if m[1] == "-" {
+		d = -d
+	}
+	return d, true
+}
+
 var windowsZones = map[string]string{
 	"Central European Standard Time": "Europe/Warsaw", "Central Europe Standard Time": "Europe/Budapest",
 	"W. Europe Standard Time": "Europe/Berlin", "Romance Standard Time": "Europe/Paris",
@@ -151,7 +193,9 @@ var windowsZones = map[string]string{
 	"Pacific Standard Time": "America/Los_Angeles", "FLE Standard Time": "Europe/Kiev",
 }
 
-// icsTime reads DTSTART-like values; allDay is true for VALUE=DATE.
+// icsTime reads DTSTART-like values in the event's own zone (UTC for "Z", TZID, or local for a
+// floating time): a recurring event repeats at its own wall-clock time, so the series is expanded
+// there and only the occurrences are converted. allDay is true for VALUE=DATE.
 func icsTime(p icsProp, local *time.Location) (t time.Time, allDay bool, err error) {
 	v := p.value
 	if p.params["VALUE"] == "DATE" || len(v) == 8 {
@@ -160,7 +204,7 @@ func icsTime(p icsProp, local *time.Location) (t time.Time, allDay bool, err err
 	}
 	if strings.HasSuffix(v, "Z") {
 		t, err = time.Parse("20060102T150405Z", v)
-		return t.In(local), false, err
+		return t, false, err
 	}
 	loc := local
 	if tz := p.params["TZID"]; tz != "" {
@@ -172,8 +216,11 @@ func icsTime(p icsProp, local *time.Location) (t time.Time, allDay bool, err err
 		}
 	}
 	t, err = time.ParseInLocation("20060102T150405", v, loc)
-	return t.In(local), false, err
+	return t, false, err
 }
+
+// instant keys an occurrence by its moment, whatever zone it is written in.
+func instant(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
 func icsText(s string) string {
 	return strings.NewReplacer(`\n`, " ", `\N`, " ", `\,`, ",", `\;`, ";", `\\`, `\`).Replace(s)
@@ -203,12 +250,21 @@ func occurrences(start time.Time, rule string, until time.Time) []time.Time {
 			}
 		}
 	}
+	type byDay struct {
+		pos int // 0: every such weekday; 1: the first in the month; -1: the last
+		wd  time.Weekday
+	}
 	var days []time.Weekday
+	var byDays []byDay
 	for _, d := range strings.Split(r["BYDAY"], ",") {
-		d = strings.TrimLeft(d, "+-0123456789") // "1MO" style positions are treated as plain weekdays
-		if wd, ok := weekdays[d]; ok {
-			days = append(days, wd)
+		name := strings.TrimLeft(d, "+-0123456789")
+		wd, ok := weekdays[name]
+		if !ok {
+			continue
 		}
+		pos, _ := strconv.Atoi(strings.TrimPrefix(d[:len(d)-len(name)], "+"))
+		days = append(days, wd)
+		byDays = append(byDays, byDay{pos, wd})
 	}
 	var out []time.Time
 	emit := func(t time.Time) bool {
@@ -251,12 +307,43 @@ func occurrences(start time.Time, rule string, until time.Time) []time.Time {
 				}
 			}
 		case "MONTHLY":
-			t := at(start, start.Year(), start.Month()+time.Month(i*interval), start.Day())
-			if t.Day() != start.Day() { // no such day this month
+			first := time.Date(start.Year(), start.Month()+time.Month(i*interval), 1, 0, 0, 0, 0, start.Location())
+			if len(byDays) == 0 {
+				t := at(start, first.Year(), first.Month(), start.Day())
+				if t.Day() != start.Day() { // no such day this month
+					continue
+				}
+				if !emit(t) {
+					return out
+				}
 				continue
 			}
-			if !emit(t) {
-				return out
+			// BYDAY=1MO (first Monday), -1FR (last Friday), TU (every Tuesday)
+			dim := first.AddDate(0, 1, -1).Day()
+			var month []time.Time
+			for _, b := range byDays {
+				var matches []int
+				for d := 1; d <= dim; d++ {
+					if time.Date(first.Year(), first.Month(), d, 0, 0, 0, 0, first.Location()).Weekday() == b.wd {
+						matches = append(matches, d)
+					}
+				}
+				switch {
+				case b.pos == 0:
+					for _, d := range matches {
+						month = append(month, at(start, first.Year(), first.Month(), d))
+					}
+				case b.pos > 0 && b.pos <= len(matches):
+					month = append(month, at(start, first.Year(), first.Month(), matches[b.pos-1]))
+				case b.pos < 0 && -b.pos <= len(matches):
+					month = append(month, at(start, first.Year(), first.Month(), matches[len(matches)+b.pos]))
+				}
+			}
+			sort.Slice(month, func(a, b int) bool { return month[a].Before(month[b]) })
+			for _, t := range month {
+				if !emit(t) {
+					return out
+				}
 			}
 		default:
 			return append(out, start)
@@ -283,7 +370,7 @@ func CalendarSpans(ics, email string, now time.Time) []Span {
 		if rid, ok := e.get("RECURRENCE-ID"); ok {
 			uid, _ := e.get("UID")
 			if t, _, err := icsTime(rid, local); err == nil {
-				moved[uid.value+"|"+t.Format(time.RFC3339)] = true
+				moved[uid.value+"|"+instant(t)] = true
 			}
 			single = append(single, e)
 			continue
@@ -315,7 +402,7 @@ func CalendarSpans(ics, email string, now time.Time) []Span {
 			}
 		}
 		if d, ok := e.get("DURATION"); ok {
-			if dur, err := time.ParseDuration(strings.ToLower(strings.NewReplacer("P", "", "T", "").Replace(d.value))); err == nil {
+			if dur, ok := parseDuration(d.value); ok {
 				return dur, true
 			}
 		}
@@ -326,7 +413,7 @@ func CalendarSpans(ics, email string, now time.Time) []Span {
 		end := start.Add(d)
 		if end.After(from) && start.Before(to) {
 			sum, _ := e.get("SUMMARY")
-			occs = append(occs, occ{start, end, icsText(sum.value)})
+			occs = append(occs, occ{start.In(local), end.In(local), icsText(sum.value)})
 		}
 	}
 	for _, e := range single {
@@ -360,13 +447,13 @@ func CalendarSpans(ics, email string, now time.Time) []Span {
 		for _, x := range e.props["EXDATE"] {
 			for _, v := range strings.Split(x.value, ",") {
 				if t, _, err := icsTime(icsProp{params: x.params, value: v}, local); err == nil {
-					ex[t.Format(time.RFC3339)] = true
+					ex[instant(t)] = true
 				}
 			}
 		}
 		rule, _ := e.get("RRULE")
 		for _, t := range occurrences(start, rule.value, to) {
-			k := t.Format(time.RFC3339)
+			k := instant(t)
 			if ex[k] || moved[uid.value+"|"+k] {
 				continue
 			}

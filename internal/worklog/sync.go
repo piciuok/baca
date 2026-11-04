@@ -52,6 +52,7 @@ func PlanSync(local, remote []Entry) []Change {
 		inTempo[r.WorklogID] = true
 		r := r
 		c := Change{ID: r.WorklogID, Tempo: &r}
+		adopt := -1 // a "*" entry without an id at the same time and ticket: give it this id
 		if l, ok := byID[r.WorklogID]; ok {
 			if same(l, r) {
 				continue
@@ -60,15 +61,23 @@ func PlanSync(local, remote []Entry) []Change {
 			c.Kind, c.Local = "changed", &l
 		} else {
 			c.Kind = "new"
+			for i, l := range local {
+				if l.Logged && l.WorklogID == "" && l.Start == r.Start && l.End == r.End && l.Ticket == r.Ticket {
+					l := l
+					c.Kind, c.Local, adopt = "changed", &l, i
+					c.Reason = "logged in the file without a Tempo id: take the id"
+					break
+				}
+			}
 		}
 		for j, o := range remote {
 			if j != i && overlaps(r, o) {
 				c.Kind, c.Reason = "conflict", "overlaps Tempo worklog #"+o.WorklogID+" ("+span(o)+")"
 			}
 		}
-		for _, l := range local {
+		for i, l := range local {
 			switch {
-			case !overlaps(r, l):
+			case i == adopt || !overlaps(r, l):
 			case l.Logged && l.WorklogID != r.WorklogID && remoteHas(remote, l.WorklogID):
 				// the other logged entry stays (Tempo has it too): both cannot be in the file
 				c.Kind, c.Reason = "conflict", "overlaps logged "+span(l)
@@ -132,7 +141,9 @@ func ApplySync(local []Entry, changes []Change, accept map[string]bool) ([]Entry
 			}
 		case "changed":
 			for i := range entries {
-				if entries[i].Logged && entries[i].WorklogID == c.ID {
+				e := entries[i]
+				idless := e.WorklogID == "" && c.Local != nil && e.Start == c.Local.Start && e.End == c.Local.End && e.Ticket == c.Local.Ticket
+				if e.Logged && (e.WorklogID == c.ID || idless) {
 					entries[i] = *c.Tempo
 				}
 			}

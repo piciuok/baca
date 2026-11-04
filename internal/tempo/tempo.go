@@ -96,19 +96,40 @@ func (c *Client) do(ctx context.Context, method, base, path string, q url.Values
 		}
 		rd = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), rd)
-	if err != nil {
-		return err
+	var raw []byte
+	if rd != nil {
+		raw, _ = io.ReadAll(rd)
 	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", auth)
-	res, err := c.http.Do(req)
-	if err != nil {
-		return err
+	var res *http.Response
+	var b []byte
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(raw))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", auth)
+		res, err = c.http.Do(req)
+		if err != nil {
+			return err
+		}
+		b, _ = io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		res.Body.Close()
+		// rate limited: wait as asked (up to 10 s) and try twice more
+		if res.StatusCode != http.StatusTooManyRequests || attempt == 2 {
+			break
+		}
+		wait := 2 * time.Second
+		if s, err := strconv.Atoi(res.Header.Get("Retry-After")); err == nil && s > 0 && s <= 10 {
+			wait = time.Duration(s) * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
 	}
-	defer res.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode >= 300 {
 		return &HTTPError{Status: res.StatusCode, Body: strings.TrimSpace(string(b))}
 	}
