@@ -326,3 +326,25 @@ func (s *Store) ReplaceDay(date time.Time, base string, entries []Entry) (DayVie
 	}
 	return view(date, nf.Day(date)), nil
 }
+
+// Earlier returns up to n days before date as text (newest first): style examples for describing.
+func (s *Store) Earlier(date time.Time, n int) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.read()
+	if err != nil {
+		return nil, err
+	}
+	days := append([]*Day(nil), f.Days...)
+	sort.SliceStable(days, func(i, j int) bool { return days[i].Date.After(days[j].Date) })
+	var out []string
+	for _, d := range days {
+		if d.Date.Before(date) && len(d.Entries) > 0 {
+			out = append(out, d.Text())
+			if len(out) == n {
+				break
+			}
+		}
+	}
+	return out, nil
+}

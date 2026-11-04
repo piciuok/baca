@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"baca/internal/activity"
+	"baca/internal/describe"
 	"baca/internal/worklog"
 )
 
@@ -32,6 +33,7 @@ type Config struct {
 	Weekdays     []string        `json:"weekdays"` // names for new day headers, Sunday first, any language
 	Updates      Updates         `json:"updates"`
 	Activity     activity.Config `json:"activity"`
+	Describe     describe.Config `json:"describe"`
 }
 
 // Updates: whether the app looks for new releases (every 6 h) and takes pre-releases.
@@ -97,6 +99,9 @@ func (c Config) Validate() error {
 				return fmt.Errorf("weekdays: %q must be letters only", d)
 			}
 		}
+	}
+	if a := c.Describe.Agent; a != "" && a != "claude" && a != "codex" {
+		return fmt.Errorf("descriptions: agent must be claude or codex, not %q", a)
 	}
 	for app, expr := range c.Activity.System.Meetings {
 		if _, err := regexp.Compile(expr); err != nil {

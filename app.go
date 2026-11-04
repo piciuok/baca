@@ -77,7 +77,7 @@ func (a *app) apply(c config.Config) {
 	a.srv.Store.SetPath(home(file))
 	worklog.SetWeekdays(c.Weekdays)
 
-	st := &server.State{Workday: c.Workday}
+	st := &server.State{Workday: c.Workday, Describe: c.Describe, GitRepos: c.Activity.Git.Repos}
 	act := c.Activity // Defaults fills the copy only, config.json stays as written
 	tc, err := tempo.Prepare(tempo.Config{AccountEmail: c.AccountEmail, Tokens: c.Tokens, JiraBaseURL: c.JiraBaseURL, TempoBaseURL: c.TempoBaseURL})
 	if err != nil {

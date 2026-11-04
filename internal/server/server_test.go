@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -339,5 +340,40 @@ func TestTempoSync(t *testing.T) {
 	}
 	if len(fake.created) != 0 || len(fake.updates) != 0 {
 		t.Fatal("sync must not write to Tempo")
+	}
+}
+
+func TestDescribe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "worklog.txt")
+	os.WriteFile(path, []byte("@Tuesday 03.11\n*[07:00 - 07:30] - ABC-1 - Logged #~1~#\n[07:30 - 08:00] - ABC-1 - Old text\n[08:00 - 09:00] - ABC-2 - Continue task\n[09:00 - 09:10] - ??? - x\n@Monday 02.11\n[07:00 - 08:00] - ABC-2 - Add the export screen\n"), 0o644)
+	var prompt string
+	s := &Server{Store: worklog.NewStore(path), Web: fstest.MapFS{"index.html": {Data: []byte("x")}}, Token: "tok",
+		DescribeRunner: func(ctx context.Context, p string) (string, error) {
+			prompt = p
+			return `[{"key":"450-480-ABC-1","desc":"Fix totals"},{"key":"480-540-ABC-2","desc":"Continue task, add filters"}]`, nil
+		}}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	var out struct {
+		Proposals []DescribeProposal `json:"proposals"`
+	}
+	if code := call(t, srv, "POST", "/api/days/2026-11-03/describe", `{}`, &out); code != 200 {
+		t.Fatalf("describe %d", code)
+	}
+	if len(out.Proposals) != 2 || out.Proposals[0].Old != "Old text" || out.Proposals[1].Old != "" || out.Proposals[1].New != "Continue task, add filters" {
+		t.Fatalf("%+v", out.Proposals)
+	}
+	// logged and ticketless blocks are not sent; the earlier day is the style example
+	if strings.Contains(prompt, `"0-450`) || strings.Contains(prompt, "420-450-ABC-1") || strings.Contains(prompt, "???") ||
+		!strings.Contains(prompt, "Add the export screen") || !strings.Contains(prompt, `"ticketSeenBefore": true`) {
+		t.Fatalf("prompt:\n%s", prompt)
+	}
+	// one block only
+	if code := call(t, srv, "POST", "/api/days/2026-11-03/describe", `{"keys":["480-540-ABC-2"]}`, &out); code != 200 || strings.Contains(prompt, "450-480-ABC-1") {
+		t.Fatalf("keys: %d", code)
+	}
+	// the file is not touched
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "Old text") {
+		t.Fatal("describe wrote the file")
 	}
 }

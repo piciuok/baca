@@ -19,6 +19,7 @@ import (
 
 	"baca/internal/activity"
 	"baca/internal/config"
+	"baca/internal/describe"
 	"baca/internal/tempo"
 	"baca/internal/update"
 	"baca/internal/worklog"
@@ -32,8 +33,12 @@ type Server struct {
 	Version  string
 	Token    string // required on every request, see guard
 
-	state atomic.Pointer[State]
-	logMu sync.Mutex
+	// DescribeRunner replaces the agent CLI (tests).
+	DescribeRunner describe.Runner
+
+	state      atomic.Pointer[State]
+	logMu      sync.Mutex
+	describeMu sync.Mutex
 }
 
 // State is what the settings can change while the server runs; it is swapped as a whole.
@@ -43,6 +48,8 @@ type State struct {
 	Activity  activity.Log  // where the probes write
 	Collector *activity.Collector
 	Workday   config.Workday
+	Describe  describe.Config
+	GitRepos  []string // globs of the watched repos (activity.git.repos)
 }
 
 // Settings reads and applies config.json for the settings screen.
@@ -78,6 +85,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tickets", s.tickets)
 	mux.HandleFunc("GET /api/days/{date}/tempo", s.tempoPlan)
 	mux.HandleFunc("POST /api/days/{date}/tempo", s.tempoApply)
+	mux.HandleFunc("POST /api/days/{date}/describe", s.describeDay)
 	mux.HandleFunc("GET /api/activity/{date}", s.activity)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
@@ -153,7 +161,7 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 	start, end, target := st.Workday.Minutes()
 	cfg := map[string]any{"file": s.Store.FilePath(), "tempo": st.Tempo != nil, "tempoError": st.TempoErr,
 		"workday": map[string]int{"start": start, "end": end, "target": target}, "settings": s.Settings != nil, "version": s.Version,
-		"weekdays": worklog.Weekdays()}
+		"weekdays": worklog.Weekdays(), "describeAgent": st.Describe.Agent}
 	if s.Updates != nil {
 		cfg["update"] = s.Updates.Info()
 	}
