@@ -2,6 +2,7 @@ package activity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -50,25 +51,33 @@ func (p *CalendarProbe) Info() string {
 
 func (p *CalendarProbe) Tick(ctx context.Context, now time.Time) ([]Span, error) {
 	var out []Span
+	var errs []string
 	for i, u := range p.cfg.URLs {
+		// the URL is a secret: errors name the calendar by number, never by address
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.Replace(u, "webcal://", "https://", 1), nil)
 		if err != nil {
-			return nil, fmt.Errorf("calendar %d: %v", i+1, err)
+			errs = append(errs, fmt.Sprintf("calendar %d: not a valid URL", i+1))
+			continue
 		}
 		res, err := p.http.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("calendar %d: %v", i+1, strings.ReplaceAll(err.Error(), u, "…")) // the URL is a secret
+			errs = append(errs, fmt.Sprintf("calendar %d: cannot fetch (network or TLS error)", i+1))
+			continue
 		}
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 32<<20))
 		res.Body.Close()
 		if res.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("calendar %d: HTTP %d", i+1, res.StatusCode)
+			errs = append(errs, fmt.Sprintf("calendar %d: HTTP %d", i+1, res.StatusCode))
+			continue
 		}
 		out = append(out, CalendarSpans(string(b), p.cfg.Email, now)...)
 	}
 	p.mu.Lock()
 	p.count = len(out)
 	p.mu.Unlock()
+	if len(errs) > 0 {
+		return out, errors.New(strings.Join(errs, "; "))
+	}
 	return out, nil
 }
 

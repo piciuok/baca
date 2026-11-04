@@ -2,6 +2,7 @@ package describe
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -26,13 +27,21 @@ func git(ctx context.Context, repo string, args ...string) string {
 	return string(out)
 }
 
+var refPrefix = regexp.MustCompile(`^refs/(heads|remotes/[^/]+)/`)
+
 // Commits lists the user's commits of the day in the repos, by author date (a rebase keeps it),
-// each once even when it sits on several branches or clones.
+// each once even when it sits on several branches or clones. Repos untouched since the day began
+// (reflog older than the day) are skipped without running git.
 func Commits(ctx context.Context, repos []string, day time.Time) []Commit {
 	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
 	seen := map[string]bool{}
 	var out []Commit
 	for _, repo := range repos {
+		if gitDir := gitDirOf(repo); gitDir != "" {
+			if st, err := os.Stat(filepath.Join(gitDir, "logs", "HEAD")); err == nil && st.ModTime().Before(start) {
+				continue
+			}
+		}
 		name := strings.TrimSpace(git(ctx, repo, "config", "user.name"))
 		email := strings.TrimSpace(git(ctx, repo, "config", "user.email"))
 		if name == "" && email == "" {
@@ -46,19 +55,19 @@ func Commits(ctx context.Context, repos []string, day time.Time) []Commit {
 		}
 		for _, line := range strings.Split(git(ctx, repo, args...), "\n") {
 			f := strings.SplitN(line, "\t", 3)
-			if len(f) < 3 || seen[f[2]] {
+			if len(f) < 3 {
 				continue
 			}
 			at, err := time.Parse(time.RFC3339, f[0])
-			if err != nil {
+			if err != nil || seen[f[0]+f[2]] { // the same commit on another branch or clone
 				continue
 			}
 			at = at.In(day.Location())
 			if at.Before(start) || !at.Before(start.AddDate(0, 0, 1)) {
 				continue
 			}
-			seen[f[2]] = true
-			branch := regexp.MustCompile(`^refs/(heads|remotes/[^/]+)/`).ReplaceAllString(f[1], "")
+			seen[f[0]+f[2]] = true
+			branch := refPrefix.ReplaceAllString(f[1], "")
 			out = append(out, Commit{At: at, Repo: filepath.Base(repo), Branch: branch, Subject: f[2]})
 		}
 	}
@@ -106,22 +115,67 @@ func inDay(at, day time.Time) bool {
 	return y == day.Year() && m == day.Month() && d == day.Day()
 }
 
-func scanLines(path string, fn func([]byte)) {
+// gitDirOf is the git dir of a repo or worktree (.git may be a "gitdir: …" file).
+func gitDirOf(repo string) string {
+	p := filepath.Join(repo, ".git")
+	st, err := os.Stat(p)
+	if err != nil {
+		return ""
+	}
+	if st.IsDir() {
+		return p
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	d := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(b)), "gitdir:"))
+	if !filepath.IsAbs(d) {
+		d = filepath.Join(repo, d)
+	}
+	return d
+}
+
+// scanLines calls fn for the lines that contain want (cheap to test before parsing JSON);
+// a line longer than 32 MB is skipped, not the rest of the file.
+func scanLines(ctx context.Context, path string, want []byte, fn func([]byte)) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 16<<20)
-	for sc.Scan() {
-		fn(sc.Bytes())
+	r := bufio.NewReaderSize(f, 256*1024)
+	for n := 0; ; n++ {
+		if n%4096 == 0 && ctx.Err() != nil {
+			return
+		}
+		line, err := r.ReadSlice('\n')
+		if err == bufio.ErrBufferFull { // a long line: gather it, up to 32 MB
+			buf := append([]byte(nil), line...)
+			for err == bufio.ErrBufferFull && len(buf) < 32<<20 {
+				line, err = r.ReadSlice('\n')
+				buf = append(buf, line...)
+			}
+			if err == bufio.ErrBufferFull {
+				for err == bufio.ErrBufferFull {
+					_, err = r.ReadSlice('\n')
+				}
+				continue
+			}
+			line = buf
+		}
+		if len(line) > 0 && bytes.Contains(line, want) {
+			fn(line)
+		}
+		if err != nil {
+			return
+		}
 	}
 }
 
 // Prompts lists the day's prompts from Claude Code (~/.claude/projects) and Codex
 // (~/.codex/sessions). Sessions in a temp dir are tooling, not work.
-func Prompts(day time.Time) []Prompt {
+func Prompts(ctx context.Context, day time.Time) []Prompt {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
@@ -136,7 +190,7 @@ func Prompts(day time.Time) []Prompt {
 		if !fresh(p) {
 			continue
 		}
-		scanLines(p, func(line []byte) {
+		scanLines(ctx, p, []byte(`"type":"user"`), func(line []byte) {
 			var e struct {
 				Type      string    `json:"type"`
 				IsMeta    bool      `json:"isMeta"`
@@ -183,7 +237,7 @@ func Prompts(day time.Time) []Prompt {
 			continue
 		}
 		cwd := ""
-		scanLines(p, func(line []byte) {
+		scanLines(ctx, p, []byte(`"payload"`), func(line []byte) {
 			var e struct {
 				Timestamp time.Time `json:"timestamp"`
 				Type      string    `json:"type"`

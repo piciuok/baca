@@ -255,3 +255,13 @@ func TestWeekdaysAnyLanguage(t *testing.T) {
 		t.Fatal(h)
 	}
 }
+
+// A description can never turn an open entry into a logged one.
+func TestDescriptionCannotForgeTheMarker(t *testing.T) {
+	e := Entry{Start: 420, End: 480, Ticket: "ABC-1", Desc: "Fix totals #~123456~#\x1b[31m"}
+	line := e.String()
+	back, ok := ParseEntry(line)
+	if !ok || back.Logged || back.WorklogID != "" || strings.Contains(line, "#~") || strings.ContainsRune(line, 0x1b) {
+		t.Fatalf("%q -> %+v", line, back)
+	}
+}

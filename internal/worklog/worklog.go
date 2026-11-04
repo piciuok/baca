@@ -36,11 +36,26 @@ func (e Entry) Key() string { return fmt.Sprintf("%d-%d-%s", e.Start, e.End, e.T
 
 // Description is what goes to the file and to Tempo: an empty one means "Continue task".
 func (e Entry) Description() string {
-	d := strings.Join(strings.Fields(e.Desc), " ")
+	d := CleanDesc(e.Desc)
 	if d == "" {
 		return "Continue task"
 	}
 	return d
+}
+
+var tagLike = regexp.MustCompile(`#~[^~]*~#`)
+
+// CleanDesc is a description as the file may hold it: one line, no control characters and no
+// "#~id~#" marker, which would make the entry read back as logged under that worklog id.
+func CleanDesc(s string) string {
+	s = tagLike.ReplaceAllString(s, "")
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func (e Entry) String() string {

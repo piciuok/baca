@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"baca/internal/auth"
 	"baca/internal/config"
@@ -411,5 +413,43 @@ func TestDescribe(t *testing.T) {
 	// the file is not touched
 	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "Old text") {
 		t.Fatal("describe wrote the file")
+	}
+}
+
+func TestDescribeTicketMatching(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "worklog.txt")
+	os.WriteFile(path, []byte("@Tuesday 03.11\n[07:00 - 08:00] - ABC-1 - x\n"), 0o644)
+	repo := t.TempDir()
+	run := func(env []string, args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		cmd.Env = append(os.Environ(), env...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+	}
+	run(nil, "init", "-q", "-b", "main")
+	run(nil, "config", "user.name", "Dev")
+	run(nil, "config", "user.email", "dev@example.com")
+	day := time.Date(2026, 11, 3, 0, 0, 0, 0, time.Local)
+	at := func(h int) []string {
+		d := day.Add(time.Duration(h) * time.Hour).Format(time.RFC3339)
+		return []string{"GIT_AUTHOR_DATE=" + d, "GIT_COMMITTER_DATE=" + d}
+	}
+	run(at(15), "commit", "-q", "--allow-empty", "-m", "ABC-12 other ticket")
+	run(at(16), "commit", "-q", "--allow-empty", "-m", "abc1: late fix of the right ticket")
+	var prompt string
+	s := &Server{Store: worklog.NewStore(path), Web: fstest.MapFS{"index.html": {Data: []byte("x")}}, Token: "tok",
+		DescribeRunner: func(ctx context.Context, p string) (string, error) {
+			prompt = p
+			return `[{"key":"420-480-ABC-1","desc":"x"}]`, nil
+		}}
+	s.SetState(&State{GitRepos: []string{repo}})
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	if code := call(t, srv, "POST", "/api/days/2026-11-03/describe", `{}`, nil); code != 200 {
+		t.Fatalf("describe %d", code)
+	}
+	if strings.Contains(prompt, "ABC-12 other ticket") || !strings.Contains(prompt, "late fix of the right ticket") {
+		t.Fatalf("prompt:\n%s", prompt)
 	}
 }

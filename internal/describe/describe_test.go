@@ -91,7 +91,7 @@ func TestPrompts(t *testing.T) {
 	now := time.Now()
 	os.Chtimes(filepath.Join(cl, "s.jsonl"), now, now)
 	os.Chtimes(filepath.Join(cx, "r.jsonl"), now, now)
-	ps := Prompts(day)
+	ps := Prompts(context.Background(), day)
 	var got []string
 	for _, p := range ps {
 		got = append(got, p.Agent+"|"+p.Cwd+"|"+p.Text)

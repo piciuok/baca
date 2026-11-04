@@ -243,10 +243,10 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
 
 <dialog id="descDlg">
   <h3 style="margin-top:0">New descriptions</h3>
-  <p class="muted" style="margin-top:0">These blocks already had a description. Tick the ones to replace; you can edit the text first.</p>
+  <p class="muted" style="margin-top:0">Tick the descriptions to use; you can edit the text first. A crossed-out line is the description the block has now.</p>
   <div id="descList"></div>
   <div class="row" style="margin-top:10px"><span style="flex:1"></span>
-    <button id="descClose">Keep the old ones</button><button id="descOk" class="primary">Replace ticked</button></div>
+    <button id="descClose">Keep the old ones</button><button id="descOk" class="primary">Use ticked</button></div>
 </dialog>
 
 <dialog id="syncDlg">
@@ -383,7 +383,7 @@ async function refreshDays() {
     daysList = await api('GET', '/api/days');
     renderDays();
     const t = await api('GET', '/api/tickets');
-    $('#tickets').innerHTML = t.map(x => `<option value="${x}">`).join('');
+    $('#tickets').replaceChildren(...t.map(x => new Option('', x)));   // never HTML: tickets come from files
   } catch { /* server unavailable – the save shows it */ }
 }
 function renderDays() {
@@ -1025,11 +1025,13 @@ function renderForm() {
   renderFormTime();
   renderDescribing();
 }
-const tempoWeekHref = d => `${(cfg.jiraBase || '').replace(/\/$/, '')}/plugins/servlet/ac/io.tempo.jira/tempo-app#!/my-work/week?type=TIME&date=${d}`;
+// links only to an http(s) Jira (the server checks the setting too)
+const jiraBase = () => /^https?:\/\//i.test(cfg.jiraBase || '') ? cfg.jiraBase.replace(/\/$/, '') : '';
+const tempoWeekHref = d => jiraBase() && `${jiraBase()}/plugins/servlet/ac/io.tempo.jira/tempo-app#!/my-work/week?type=TIME&date=${d}`;
 function jiraHref(b) {
-  if (!b || !cfg.jiraBase || !TICKET_RE.test(b.ticket)) return '';
+  if (!b || !jiraBase() || !TICKET_RE.test(b.ticket)) return '';
   if (b.logged && b.worklogId) return tempoWeekHref(day) + `&focusedWorklogId=${encodeURIComponent(b.worklogId)}`;
-  return `${cfg.jiraBase.replace(/\/$/, '')}/browse/${encodeURIComponent(b.ticket)}`;
+  return `${jiraBase()}/browse/${encodeURIComponent(b.ticket)}`;
 }
 function renderJiraLink(b) {
   const a = $('#fJira'), href = jiraHref(b);
@@ -1274,7 +1276,7 @@ async function describeBlocks(keys) {
     for (const p of res.proposals) {
       const b = blocks.find(x => blockKey(x) === p.key && !x.logged);
       if (!b) continue;   // changed while the agent was writing
-      (b.desc ? ask : fill).push([b, p]);
+      (b.desc || res.reviewed ? ask : fill).push([b, p]);   // Codex: always look first
     }
     if (fill.length) {
       snapshot();
@@ -1452,8 +1454,8 @@ addEventListener('beforeunload', e => { if (dirty || saving) { flush(); e.preven
 function render() {
   dateInput.value = day;
   const tw = $('#tempoWeek');
-  tw.hidden = !cfg.jiraBase;
-  if (cfg.jiraBase) tw.href = tempoWeekHref(day);
+  tw.hidden = !jiraBase();
+  if (jiraBase()) tw.href = tempoWeekHref(day);
   $('#syncBtn').hidden = !cfg.tempo;
   renderDescribing();
   renderDays(); renderTimeline(); renderActivity(); renderSum(); renderForm(); renderOutput();

@@ -88,10 +88,10 @@ func (s *Store) read() (*File, error) {
 }
 
 func (s *Store) write(f *File) error {
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
 		return err
 	}
-	mode := os.FileMode(0o644)
+	mode := os.FileMode(0o600) // a new worklog is the user's alone; an existing file keeps its mode
 	if st, err := os.Stat(s.Path); err == nil {
 		mode = st.Mode().Perm()
 	}

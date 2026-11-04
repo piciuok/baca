@@ -90,7 +90,9 @@ func (c *Collector) tick(ctx context.Context, p Probe) {
 	now := c.Now()
 	spans, err := p.Tick(ctx, now)
 	if sn, ok := p.(Snapshot); ok {
-		if err == nil { // a failed fetch keeps the last good snapshot
+		// a failed fetch keeps the last good snapshot; with several sources (accounts,
+		// calendars) the ones that answered still replace it
+		if err == nil || len(spans) > 0 {
 			c.replace(p, sn.Days(now), spans)
 		}
 	} else {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -74,7 +75,7 @@ func (s *Server) describeDay(w http.ResponseWriter, r *http.Request) {
 	for _, p := range props {
 		res = append(res, DescribeProposal{Key: p.Key, Old: cur[p.Key], New: p.Desc})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"proposals": res})
+	writeJSON(w, http.StatusOK, map[string]any{"proposals": res, "reviewed": describe.Reviewed(st.Describe)})
 }
 
 func hm(m int) string { return fmt.Sprintf("%02d:%02d", m/60, m%60) }
@@ -113,7 +114,7 @@ func (s *Server) describeRequest(ctx context.Context, st *State, date time.Time,
 	repos := activity.Repos(st.GitRepos)
 	commits := describe.Commits(ctx, repos, date)
 	var prompts []describe.Prompt
-	for _, p := range describe.Prompts(date) {
+	for _, p := range describe.Prompts(ctx, date) {
 		if activity.RepoOf(p.Cwd, repos) != "" { // work outside the watched repos stays out
 			prompts = append(prompts, p)
 		}
@@ -128,14 +129,20 @@ func (s *Server) describeRequest(ctx context.Context, st *State, date time.Time,
 		b := describe.Block{Key: e.Key(), Ticket: e.Ticket, From: hm(e.Start), To: hm(e.End), Current: e.Desc,
 			FirstOfTicket: firstOf[e.Ticket] == e.Key(), TicketSeenBefore: seenBefore(e.Ticket)}
 		near := func(t time.Time) bool { m := clock(t); return m >= e.Start-10 && m < e.End+10 }
-		names := func(s string) bool {
-			return strings.Contains(strings.ToUpper(s), e.Ticket) || strings.Contains(strings.ToUpper(strings.ReplaceAll(s, "-", "")), strings.ReplaceAll(e.Ticket, "-", ""))
-		}
+		// ABC-1 in a branch or subject: abc-1, ABC1, but never ABC-12
+		prefix, num, _ := strings.Cut(e.Ticket, "-")
+		ticketRE := regexp.MustCompile(`(?i)(?:^|[^a-z0-9])` + regexp.QuoteMeta(prefix) + `-?0*` + regexp.QuoteMeta(num) + `(?:$|[^0-9])`)
+		var during, named []string // commits during the block first, so the cap keeps them
 		for _, c := range commits {
-			if near(c.At) || names(c.Branch) || names(c.Subject) {
-				b.Evidence.Commits = append(b.Evidence.Commits, fmt.Sprintf("%s %s (%s): %s", c.At.Format("15:04"), c.Repo, c.Branch, c.Subject))
+			line := fmt.Sprintf("%s %s (%s): %s", c.At.Format("15:04"), c.Repo, c.Branch, c.Subject)
+			switch {
+			case near(c.At):
+				during = append(during, line)
+			case ticketRE.MatchString(c.Branch) || ticketRE.MatchString(c.Subject):
+				named = append(named, line)
 			}
 		}
+		b.Evidence.Commits = append(during, named...)
 		for _, p := range prompts {
 			if near(p.At) {
 				b.Evidence.Prompts = append(b.Evidence.Prompts, fmt.Sprintf("%s %s in %s: %s", p.At.Format("15:04"), p.Agent, filepath.Base(p.Cwd), p.Text))
