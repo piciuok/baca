@@ -303,3 +303,26 @@ func (s *Store) UpdateLogged(date time.Time, key, ticket, desc string) (DayView,
 func (s *Store) UnmarkLogged(date time.Time, key string) (DayView, error) {
 	return s.changeLogged(date, key, func(e *Entry) { e.Logged, e.WorklogID = false, "" })
 }
+
+// ReplaceDay writes the day's entries as given, logged ones included (Tempo sync). base is the
+// hash the plan was made from.
+func (s *Store) ReplaceDay(date time.Time, base string, entries []Entry) (DayView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.read()
+	if err != nil {
+		return DayView{}, err
+	}
+	d := f.Day(date)
+	if Hash(d) != base {
+		return view(date, d), ErrConflict
+	}
+	if err := Validate(entries); err != nil {
+		return view(date, d), err
+	}
+	nf := f.SetDay(date, entries, s.Now())
+	if err := s.write(nf); err != nil {
+		return DayView{}, err
+	}
+	return view(date, nf.Day(date)), nil
+}

@@ -74,6 +74,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/days/{date}/logged/update", s.updateLogged)
 	mux.HandleFunc("POST /api/days/{date}/logged/delete", s.unlogEntry)
 	mux.HandleFunc("GET /api/tickets", s.tickets)
+	mux.HandleFunc("GET /api/days/{date}/tempo", s.tempoPlan)
+	mux.HandleFunc("POST /api/days/{date}/tempo", s.tempoApply)
 	mux.HandleFunc("GET /api/activity/{date}", s.activity)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
@@ -538,4 +540,136 @@ func (s *Server) installUpdate(w http.ResponseWriter, r *http.Request) {
 	}()
 	in.Installing = true
 	writeJSON(w, http.StatusAccepted, in)
+}
+
+// remoteDay reads the user's Tempo worklogs of a day as worklog entries.
+func remoteDay(ctx context.Context, tc *tempo.Client, date time.Time) ([]worklog.Entry, error) {
+	account, err := tc.AccountID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	wls, err := tc.Existing(ctx, account, date)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]worklog.Entry, 0, len(wls))
+	for _, w := range wls {
+		key, err := tc.IssueKey(ctx, w.IssueID)
+		if err != nil {
+			return nil, err
+		}
+		t, err := time.Parse("15:04:05", w.StartTime)
+		if err != nil {
+			t, _ = time.Parse("15:04", w.StartTime) // a worklog without a start time begins at 00:00
+		}
+		start := t.Hour()*60 + t.Minute()
+		end := start + (w.Seconds+30)/60
+		if end > 24*60 {
+			end = 24 * 60
+		}
+		if end <= start {
+			end = start + 1
+		}
+		desc := strings.Join(strings.Fields(w.Description), " ")
+		if desc == "Continue task" {
+			desc = ""
+		}
+		out = append(out, worklog.Entry{Start: start, End: end, Ticket: key, Desc: desc, Logged: true, WorklogID: w.ID})
+	}
+	return out, nil
+}
+
+// syncPlan compares the day in the file with Tempo; Tempo is the truth for logged worklogs.
+func (s *Server) syncPlan(ctx context.Context, tc *tempo.Client, date time.Time) (worklog.DayView, []worklog.Change, error) {
+	v, err := s.Store.GetDay(date)
+	if err != nil {
+		return v, nil, err
+	}
+	remote, err := remoteDay(ctx, tc, date)
+	if err != nil {
+		return v, nil, err
+	}
+	return v, worklog.PlanSync(v.Entries, remote), nil
+}
+
+// tempoPlan shows what "Sync from Tempo" would change in the day.
+func (s *Server) tempoPlan(w http.ResponseWriter, r *http.Request) {
+	date, err := parseDate(r)
+	if err != nil {
+		fail(w, http.StatusBadRequest, err, nil)
+		return
+	}
+	tc, tempoErr := s.st().Tempo, s.st().TempoErr
+	if tc == nil {
+		fail(w, http.StatusServiceUnavailable, errors.New("Tempo unavailable: "+tempoErr), nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	defer cancel()
+	v, changes, err := s.syncPlan(ctx, tc, date)
+	if err != nil {
+		fail(w, http.StatusBadGateway, err, nil)
+		return
+	}
+	if changes == nil {
+		changes = []worklog.Change{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hash": v.Hash, "changes": changes})
+}
+
+// tempoApply applies the accepted changes. The plan is made again from Tempo and the file, so the
+// hash must still match the day the user looked at.
+func (s *Server) tempoApply(w http.ResponseWriter, r *http.Request) {
+	date, err := parseDate(r)
+	if err != nil {
+		fail(w, http.StatusBadRequest, err, nil)
+		return
+	}
+	tc, tempoErr := s.st().Tempo, s.st().TempoErr
+	if tc == nil {
+		fail(w, http.StatusServiceUnavailable, errors.New("Tempo unavailable: "+tempoErr), nil)
+		return
+	}
+	var body struct {
+		Hash   string   `json:"hash"`
+		Accept []string `json:"accept"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+		fail(w, http.StatusBadRequest, err, nil)
+		return
+	}
+	if !s.logMu.TryLock() {
+		fail(w, http.StatusConflict, errors.New("another Tempo operation is running"), nil)
+		return
+	}
+	defer s.logMu.Unlock()
+	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+	defer cancel()
+	v, changes, err := s.syncPlan(ctx, tc, date)
+	if err != nil {
+		fail(w, http.StatusBadGateway, err, nil)
+		return
+	}
+	if v.Hash != body.Hash {
+		fail(w, http.StatusConflict, worklog.ErrConflict, &v)
+		return
+	}
+	accept := map[string]bool{}
+	for _, id := range body.Accept {
+		accept[id] = true
+	}
+	entries, err := worklog.ApplySync(v.Entries, changes, accept)
+	if err != nil {
+		fail(w, http.StatusUnprocessableEntity, err, &v)
+		return
+	}
+	day, err := s.Store.ReplaceDay(date, v.Hash, entries)
+	switch {
+	case errors.Is(err, worklog.ErrConflict):
+		fail(w, http.StatusConflict, err, &day)
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err, nil)
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"day": day})
+	}
 }

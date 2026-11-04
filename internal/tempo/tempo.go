@@ -63,11 +63,12 @@ type Client struct {
 
 	mu        sync.Mutex
 	accountID string
-	issues    map[string]string
+	issues    map[string]string // key -> id
+	keys      map[string]string // id -> key
 }
 
 func New(cfg Config) *Client {
-	return &Client{cfg: cfg, http: &http.Client{Timeout: 30 * time.Second}, issues: map[string]string{}}
+	return &Client{cfg: cfg, http: &http.Client{Timeout: 30 * time.Second}, issues: map[string]string{}, keys: map[string]string{}}
 }
 
 func (c *Client) JiraBase() string { return c.cfg.JiraBaseURL }
@@ -192,9 +193,10 @@ func (c *Client) Existing(ctx context.Context, accountID string, day time.Time) 
 			Issue struct {
 				ID flexID `json:"id"`
 			} `json:"issue"`
-			StartDate string `json:"startDate"`
-			StartTime string `json:"startTime"`
-			Seconds   int    `json:"timeSpentSeconds"`
+			StartDate   string `json:"startDate"`
+			StartTime   string `json:"startTime"`
+			Seconds     int    `json:"timeSpentSeconds"`
+			Description string `json:"description"`
 		} `json:"results"`
 	}
 	q := url.Values{"from": {d}, "to": {d}, "limit": {"1000"}}
@@ -203,7 +205,7 @@ func (c *Client) Existing(ctx context.Context, accountID string, day time.Time) 
 	}
 	out := make([]Worklog, 0, len(res.Results))
 	for _, r := range res.Results {
-		out = append(out, Worklog{ID: string(r.ID), IssueID: string(r.Issue.ID), StartDate: r.StartDate, StartTime: r.StartTime, Seconds: r.Seconds})
+		out = append(out, Worklog{ID: string(r.ID), IssueID: string(r.Issue.ID), StartDate: r.StartDate, StartTime: r.StartTime, Seconds: r.Seconds, Description: r.Description})
 	}
 	return out, nil
 }
@@ -287,4 +289,24 @@ func (c *Client) Delete(ctx context.Context, id string) error {
 		return nil
 	}
 	return err
+}
+
+// IssueKey resolves Jira's numeric issue id to its key (ABC-123), cached.
+func (c *Client) IssueKey(ctx context.Context, id string) (string, error) {
+	c.mu.Lock()
+	key, ok := c.keys[id]
+	c.mu.Unlock()
+	if ok {
+		return key, nil
+	}
+	var issue struct {
+		Key string `json:"key"`
+	}
+	if err := c.jira(ctx, "/rest/api/3/issue/"+url.PathEscape(id)+"?fields=summary", &issue); err != nil {
+		return "", fmt.Errorf("issue %s in Jira: %w", id, err)
+	}
+	c.mu.Lock()
+	c.keys[id], c.issues[issue.Key] = issue.Key, id
+	c.mu.Unlock()
+	return issue.Key, nil
 }

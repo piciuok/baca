@@ -40,6 +40,10 @@ func (f *fakeAtlassian) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"errorMessages":["Issue does not exist"]}`, 404)
 			return
 		}
+		if k, ok := map[string]string{"101": "ABC-1", "102": "ABC-2"}[key]; ok { // by numeric id
+			io.WriteString(w, `{"id":"`+key+`","key":"`+k+`"}`)
+			return
+		}
 		io.WriteString(w, `{"id":"`+map[string]string{"ABC-1": "101", "ABC-2": "102"}[key]+`","key":"`+key+`"}`)
 	case r.Method == "GET" && r.URL.Path == "/4/worklogs/user/acc-1":
 		json.NewEncoder(w).Encode(map[string]any{"results": f.existing})
@@ -291,5 +295,44 @@ func TestSettings(t *testing.T) {
 	}
 	if code := call(t, srv2, "PUT", "/api/settings", `{"nope":1}`, nil); code != http.StatusBadRequest {
 		t.Fatalf("unknown field: %d", code)
+	}
+}
+
+func TestTempoSync(t *testing.T) {
+	srv, fake, path := setup(t, "@Tuesday 03.11\n*[07:00 - 07:30] - ABC-1 - Review #~9001~#\n[07:30 - 09:00] - ABC-2 - Work\n*[09:00 - 09:15] - ABC-1 - Gone #~9002~#\n")
+	fake.existing = []map[string]any{
+		{"tempoWorklogId": 9001, "issue": map[string]any{"id": 101}, "startDate": "2026-11-03", "startTime": "07:00:00", "timeSpentSeconds": 2700, "description": "Review, more"},
+		{"tempoWorklogId": 777, "issue": map[string]any{"id": 102}, "startDate": "2026-11-03", "startTime": "08:00:00", "timeSpentSeconds": 1800, "description": "Continue task"},
+	}
+	var plan struct {
+		Hash    string           `json:"hash"`
+		Changes []worklog.Change `json:"changes"`
+	}
+	if code := call(t, srv, "GET", "/api/days/2026-11-03/tempo", "", &plan); code != 200 {
+		t.Fatalf("plan %d", code)
+	}
+	var got []string
+	for _, c := range plan.Changes {
+		got = append(got, c.ID+":"+c.Kind)
+	}
+	if strings.Join(got, " ") != "9001:changed 777:new 9002:deleted" {
+		t.Fatalf("plan %v", got)
+	}
+	if code := call(t, srv, "POST", "/api/days/2026-11-03/tempo", `{"hash":"stale","accept":["9001"]}`, nil); code != http.StatusConflict {
+		t.Fatalf("stale hash: %d", code)
+	}
+	var out struct {
+		Day worklog.DayView `json:"day"`
+	}
+	if code := call(t, srv, "POST", "/api/days/2026-11-03/tempo", `{"hash":"`+plan.Hash+`","accept":["9001","777","9002"]}`, &out); code != 200 {
+		t.Fatalf("apply %d", code)
+	}
+	b, _ := os.ReadFile(path)
+	want := "@Tuesday 03.11\n*[07:00 - 07:45] - ABC-1 - Review, more #~9001~#\n[07:45 - 08:00] - ABC-2 - Work\n*[08:00 - 08:30] - ABC-2 - Continue task #~777~#\n[08:30 - 09:00] - ABC-2 - Work\n[09:00 - 09:15] - ABC-1 - Gone\n"
+	if string(b) != want {
+		t.Fatalf("file:\n%s\nwant:\n%s", b, want)
+	}
+	if len(fake.created) != 0 || len(fake.updates) != 0 {
+		t.Fatal("sync must not write to Tempo")
 	}
 }

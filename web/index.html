@@ -135,6 +135,8 @@ dialog textarea{width:100%;height:280px;font:12px/1.5 ui-monospace,Menlo,monospa
 .loglist{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:50vh;overflow:auto;margin:0 0 10px;padding:0;list-style:none}
 .loglist li{display:flex;gap:8px;white-space:nowrap}
 .loglist li span:last-child{overflow:hidden;text-overflow:ellipsis}
+.loglist li input{margin:0 2px 0 0}
+.loglist li.sub{padding-left:26px;font-size:11px}
 .loglist .bad{color:var(--yellow)}
 .loglist .err{color:var(--red)}
 .loglist .good{color:var(--green)}
@@ -160,6 +162,7 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
   <button id="redo" title="Redo (⇧⌘Z)">↷</button>
   <button id="importBtn">Import worklog</button>
   <button id="settingsBtn" title="Working hours, accounts, tokens, probes">⚙</button>
+  <button id="syncBtn" title="Compare the day with your worklogs in Tempo and take Tempo's version">Sync from Tempo</button>
   <button id="logBtn" class="primary">Log to Tempo</button>
 </header>
 
@@ -224,6 +227,14 @@ kbd{background:#0f1114;border:1px solid var(--line);border-radius:4px;padding:0 
     <div id="setFoot"><span id="setInfo" class="muted" style="font-size:12px">Tokens are stored in a file only you can read (600) and never come back to the browser. ••• means “unchanged”.</span><span style="flex:1"></span>
       <button type="button" id="setCancel">Cancel</button><button type="button" id="setSave" class="primary">Save</button></div>
   </form>
+</dialog>
+
+<dialog id="syncDlg">
+  <h3 style="margin-top:0" id="syncTitle">Sync from Tempo</h3>
+  <p class="muted" style="margin-top:0">Tempo is the truth for logged worklogs. Ticked changes go into the file; open blocks under a Tempo worklog are cut around it. Nothing is sent to Tempo.</p>
+  <ul class="loglist" id="syncList"></ul>
+  <div class="row"><span id="syncInfo" class="muted"></span><span style="flex:1"></span>
+    <button id="syncClose">Close</button><button id="syncOk" class="primary">Apply</button></div>
 </dialog>
 
 <dialog id="logDlg">
@@ -1127,6 +1138,60 @@ $('#logBtn').onclick = async () => {
   logDlg.showModal();
 };
 $('#logClose').onclick = () => logDlg.close();
+
+// ---------- sync from Tempo: Tempo's worklogs of the day into the file ----------
+const syncDlg = $('#syncDlg');
+let syncPlan = null;
+const SYNC = {
+  new: ['+', 'good', 'only in Tempo – add as logged'],
+  changed: ['~', 'bad', 'changed in Tempo – take Tempo’s version'],
+  deleted: ['−', 'bad', 'gone from Tempo – make it an open block'],
+  conflict: ['✗', 'err', ''],
+};
+const brief = e => `${fmt(e.start)}–${fmt(e.end)} ${e.ticket || '???'} ${e.desc || 'Continue task'}`;
+async function openSync() {
+  await flush();
+  $('#syncTitle').textContent = `Sync from Tempo: ${header(day).slice(1)}`;
+  const list = $('#syncList'); list.innerHTML = '';
+  $('#syncInfo').textContent = 'Reading Tempo…'; $('#syncOk').disabled = true;
+  syncDlg.showModal();
+  try { syncPlan = await api('GET', `/api/days/${day}/tempo`); }
+  catch (e) { $('#syncInfo').textContent = 'Error: ' + e.message; return; }
+  const ch = syncPlan.changes || [];
+  for (const c of ch) {
+    const [icon, cls, what] = SYNC[c.kind];
+    const li = document.createElement('li');
+    const box = document.createElement('input'); box.type = 'checkbox'; box.dataset.id = c.id;
+    box.checked = c.kind !== 'conflict'; box.disabled = c.kind === 'conflict';
+    const main = c.tempo || c.local;
+    li.append(box);
+    li.insertAdjacentHTML('beforeend', `<span class="${cls}">${icon}</span><span></span><span class="${cls}"></span>`);
+    li.children[2].textContent = `#${c.id} ${brief(main)}`;
+    li.children[3].textContent = c.kind === 'conflict' ? 'conflict: ' + c.reason + ' – fix it in Tempo' : what;
+    list.appendChild(li);
+    const sub = text => { const s = document.createElement('li'); s.className = 'sub muted'; s.textContent = text; list.appendChild(s); };
+    if (c.kind === 'changed') sub(`file:  ${brief(c.local)}`);
+    for (const t of c.trims || []) sub(`cuts open block ${brief(t)}`);
+  }
+  const n = ch.filter(c => c.kind !== 'conflict').length;
+  $('#syncInfo').textContent = ch.length ? `${n} change(s)` + (ch.length > n ? `, ${ch.length - n} conflict(s)` : '') : 'The day matches Tempo.';
+  $('#syncOk').disabled = !n;
+}
+$('#syncBtn').onclick = openSync;
+$('#syncClose').onclick = () => syncDlg.close();
+$('#syncOk').onclick = async () => {
+  const accept = [...syncDlg.querySelectorAll('input[type=checkbox]:checked')].map(b => b.dataset.id);
+  $('#syncOk').disabled = true;
+  try {
+    const res = await api('POST', `/api/days/${day}/tempo`, { hash: syncPlan.hash, accept });
+    fromView(res.day); history = []; future = []; formFor = undefined; render(); refreshDays();
+    syncDlg.close();
+    toast(`Synced ${accept.length} change(s) from Tempo.`);
+  } catch (e) {
+    if (e.data?.day) { fromView(e.data.day); render(); }
+    $('#syncInfo').textContent = (e.status === 409 ? 'The day changed meanwhile – open Sync again. ' : 'Error: ') + e.message;
+  }
+};
 $('#logOk').onclick = async () => {
   const btn = $('#logOk');
   btn.disabled = true; btn.textContent = 'Sending…';
@@ -1169,7 +1234,7 @@ $('#undo').onclick = undo;
 $('#redo').onclick = redo;
 
 document.addEventListener('keydown', e => {
-  const inField = /INPUT|TEXTAREA/.test(document.activeElement?.tagName) || importDlg.open || logDlg.open || $("#settingsDlg").open;
+  const inField = /INPUT|TEXTAREA/.test(document.activeElement?.tagName) || importDlg.open || logDlg.open || syncDlg.open || $("#settingsDlg").open;
   if (e.key === 'Escape') {
     if (drag) endDrag(true);
     else if (!inField) { selId = null; render(); }
@@ -1205,6 +1270,7 @@ function render() {
   const tw = $('#tempoWeek');
   tw.hidden = !cfg.jiraBase;
   if (cfg.jiraBase) tw.href = tempoWeekHref(day);
+  $('#syncBtn').hidden = !cfg.tempo;
   renderDays(); renderTimeline(); renderActivity(); renderSum(); renderForm(); renderOutput();
 }
 setInterval(renderTimeline, 60 * 1000);

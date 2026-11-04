@@ -110,6 +110,7 @@ How suggestions are made:
 - “Log to Tempo” sends the open entries of the day and marks each in the file right after Tempo accepts it. A worklog already in Tempo (same issue, start and length) is only marked, so an interrupted run never logs twice.
 - “Edit in Tempo” changes a logged entry's ticket or description, in Tempo first and then in the file. “Delete from Tempo” removes the worklog and turns the block back into an open one, so you can fix its time and log it again.
 - “Worklog in Tempo ↗” opens the week in Tempo with that worklog in focus.
+- “Sync from Tempo” compares the day with your worklogs in Tempo and shows the differences first. Tempo is the truth for logged worklogs: worklogs logged directly in Tempo are added, ones changed there take Tempo's time, ticket and description, and ones deleted there become open blocks again. An open block under a Tempo worklog is cut around it. A Tempo worklog that overlaps another logged one cannot be written and is shown as a conflict to fix in Tempo. You untick what you do not want; nothing is sent to Tempo.
 
 ## Settings
 
