@@ -6,5 +6,12 @@
     "temp": ""
   },
   "jiraBaseUrl": "https://example.atlassian.net",
-  "tempoBaseUrl": "https://api.tempo.io"
+  "tempoBaseUrl": "https://api.tempo.io",
+  "activity": {
+    "git": {
+      "repos": [
+        "~/Projects/*"
+      ]
+    }
+  }
 }

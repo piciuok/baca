@@ -34,3 +34,28 @@ Configuration: `config.json` next to the binary (with `go run`, in the working d
 
 - The UI saves the day about 400 ms after the last change (`PUT /api/days/{date}` with the day's hash). If the day changed in the file meanwhile, the server answers 409 and the UI loads the current version.
 - “Log to Tempo” (`POST /api/days/{date}/log`) sends the open entries and marks each in the file right after Tempo accepts it. A worklog already in Tempo (same issue, start and length) is only marked, no duplicate is created.
+
+## Activity (probes)
+
+The server runs probes that record what happened during the day (`-collect=false` turns them off). Each probe runs in its own loop and writes spans to `activity/YYYY-MM-DD.jsonl` (a local file, mode 600). The “Activity” bar under the timeline shows the apps and suggested blocks. A click adds a suggestion into the free time, “Accept all suggestions” does it for the whole day.
+
+| probe | what it records | how often |
+|---|---|---|
+| `system` | the app in front, its window title, idle time (macOS: `lsappinfo`, `osascript`, `ioreg`; Linux X11: `xdotool`, `xprintidle`) | 5 s |
+| `git` | repositories from `activity.git.repos` whose git state changed (index, HEAD, reflog), with the branch | 1 min |
+| `claude` | Claude Code sessions that wrote in that time, mapped to a watched repo | 1 min |
+
+- Window titles on macOS need the Accessibility permission for the app baca was started from. Without it only the app name is recorded. Apps in `activity.system.ignoreApps` (password managers by default) never get their titles recorded.
+- Idle time longer than `idleAfterSeconds` (180) reaches back to the last mouse or keyboard input.
+- Suggestions use 5-minute steps. A step is active with at least 2 minutes at the computer or activity in a repo or Claude. The ticket comes from window titles (seconds) or from the branch of an active repo (weight ×2). Only ticket prefixes already used in the worklog count. A step without evidence continues the previous ticket.
+
+Configuration (the `activity` section of `config.json`, all optional):
+
+```json
+"activity": {
+  "dir": "~/.local/share/baca/activity",
+  "system": { "intervalSeconds": 5, "idleAfterSeconds": 180, "ignoreApps": ["1Password"] },
+  "git": { "repos": ["~/Projects/*"] },
+  "claude": { "enabled": true }
+}
+```

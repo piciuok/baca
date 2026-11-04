@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,11 +11,14 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
+	"baca/internal/activity"
 	"baca/internal/server"
 	"baca/internal/tempo"
 	"baca/internal/worklog"
@@ -49,10 +53,12 @@ func main() {
 	cfgPath := flag.String("config", env("BACA_CONFIG", defaultConfig()), "config.json (worklog file, Jira/Tempo tokens)")
 	file := flag.String("file", os.Getenv("BACA_FILE"), "worklog file (overrides worklogFile from the config)")
 	open := flag.Bool("open", false, "open the UI in the browser")
+	collect := flag.Bool("collect", true, "collect activity (probes from the activity section of the config)")
 	flag.Parse()
 
 	var local struct {
-		WorklogFile string `json:"worklogFile"`
+		WorklogFile string          `json:"worklogFile"`
+		Activity    activity.Config `json:"activity"`
 	}
 	if b, err := os.ReadFile(home(*cfgPath)); err == nil {
 		if err := json.Unmarshal(b, &local); err != nil {
@@ -79,6 +85,23 @@ func main() {
 		s.Tempo = tempo.New(cfg)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	local.Activity.Defaults(s.Store.Path)
+	s.Activity = activity.Log{Dir: local.Activity.Dir}
+	collectorDone := make(chan struct{})
+	if probes := local.Activity.Probes(); *collect && len(probes) > 0 {
+		s.Collector = activity.NewCollector(s.Activity, probes...)
+		go func() { s.Collector.Run(ctx); close(collectorDone) }()
+		names := []string{}
+		for _, p := range probes {
+			names = append(names, p.Name())
+		}
+		log.Printf("activity: %s → %s", strings.Join(names, ", "), local.Activity.Dir)
+	} else {
+		close(collectorDone)
+	}
+
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatal(err)
@@ -89,7 +112,16 @@ func main() {
 		go openBrowser(url)
 	}
 	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	log.Fatal(srv.Serve(ln))
+	go func() {
+		<-ctx.Done()
+		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		srv.Shutdown(sctx)
+	}()
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+	<-collectorDone // the open activity span is written before exit
 }
 
 func openBrowser(url string) {

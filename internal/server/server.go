@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"baca/internal/activity"
 	"baca/internal/tempo"
 	"baca/internal/worklog"
 )
@@ -23,6 +24,9 @@ type Server struct {
 	Tempo    *tempo.Client // nil when the Tempo config is missing
 	TempoErr string        // why Tempo is not available
 	Web      fs.FS         // must hold index.html
+
+	Activity  activity.Log        // where the probes write
+	Collector *activity.Collector // nil when collecting is off
 
 	logMu sync.Mutex
 }
@@ -40,6 +44,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/days/{date}/logged/update", s.updateLogged)
 	mux.HandleFunc("POST /api/days/{date}/logged/delete", s.unlogEntry)
 	mux.HandleFunc("GET /api/tickets", s.tickets)
+	mux.HandleFunc("GET /api/activity/{date}", s.activity)
 	return guard(mux)
 }
 
@@ -378,4 +383,32 @@ func (s *Server) unlogEntry(w http.ResponseWriter, r *http.Request) {
 		}
 		return v, 0, nil
 	})
+}
+
+// activity returns the day's activity per app and the suggested blocks. Tickets are only
+// recognized with prefixes already used in the worklog, so "UTF-8" never becomes a ticket.
+func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
+	date, err := parseDate(r)
+	if err != nil {
+		fail(w, http.StatusBadRequest, err, nil)
+		return
+	}
+	spans, err := s.Activity.Read(date.Format("2006-01-02"))
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err, nil)
+		return
+	}
+	known := map[string]bool{}
+	if tickets, err := s.Store.Tickets(); err == nil {
+		for _, t := range tickets {
+			if i := strings.LastIndex(t, "-"); i > 0 {
+				known[t[:i]] = true
+			}
+		}
+	}
+	probes := []activity.ProbeStatus{}
+	if s.Collector != nil {
+		probes = s.Collector.Status()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"probes": probes, "day": activity.Analyze(spans, known)})
 }
