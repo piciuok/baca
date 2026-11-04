@@ -12,6 +12,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"baca/internal/config"
 	"baca/internal/tempo"
 	"baca/internal/worklog"
 )
@@ -86,7 +87,8 @@ func setup(t *testing.T, content string) (*httptest.Server, *fakeAtlassian, stri
 	var cfg tempo.Config
 	cfg.AccountEmail, cfg.Tokens.Jira, cfg.Tokens.Tempo = "me@example.com", "jira-token", "tempo-token"
 	cfg.JiraBaseURL, cfg.TempoBaseURL = atl.URL, atl.URL
-	s := &Server{Store: worklog.NewStore(path), Tempo: tempo.New(cfg), Web: fstest.MapFS{"index.html": {Data: []byte("<html>")}}}
+	s := &Server{Store: worklog.NewStore(path), Web: fstest.MapFS{"index.html": {Data: []byte("<html>")}}}
+	s.SetState(&State{Tempo: tempo.New(cfg)})
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	return srv, fake, path
@@ -228,5 +230,53 @@ func TestUpdateAndUnlog(t *testing.T) {
 	b, _ = os.ReadFile(path)
 	if strings.Join(fake.deleted, ",") != "55" || string(b) != "@Wtorek 03.11\n[07:00 - 07:30] - ABC-2 - Work\n[07:30 - 08:00] - ABC-2 - Work\n" {
 		t.Fatalf("deleted %v file:\n%s", fake.deleted, b)
+	}
+}
+
+type fakeSettings struct {
+	cfg     config.Config
+	applied int
+}
+
+func (f *fakeSettings) Get() config.Config { return f.cfg }
+func (f *fakeSettings) Path() string       { return "/x/config.json" }
+func (f *fakeSettings) Apply(c config.Config) error {
+	f.cfg = c
+	f.applied++
+	return nil
+}
+
+func TestSettings(t *testing.T) {
+	fs := &fakeSettings{}
+	fs.cfg.Tokens.Jira = "jira-secret"
+	fs.cfg.Activity.Slack.Token = "xoxp-secret"
+	s := &Server{Store: worklog.NewStore(filepath.Join(t.TempDir(), "w.txt")), Web: fstest.MapFS{"index.html": {Data: []byte("x")}}, Settings: fs}
+	srv2 := httptest.NewServer(s.Handler())
+	defer srv2.Close()
+
+	res, _ := http.Get(srv2.URL + "/api/settings")
+	b, _ := io.ReadAll(res.Body)
+	if strings.Contains(string(b), "secret") || !strings.Contains(string(b), config.Mask) {
+		t.Fatalf("leak or no mask: %s", b)
+	}
+	var got struct {
+		Config config.Config `json:"config"`
+	}
+	json.Unmarshal(b, &got)
+	got.Config.Workday.Start, got.Config.Activity.Slack.Token = "07:00", ""
+	body, _ := json.Marshal(got.Config)
+	if code := call(t, srv2, "PUT", "/api/settings", string(body), nil); code != 200 {
+		t.Fatalf("put %d", code)
+	}
+	if fs.cfg.Tokens.Jira != "jira-secret" || fs.cfg.Activity.Slack.Token != "" || fs.cfg.Workday.Start != "07:00" || fs.applied != 1 {
+		t.Fatalf("%+v", fs.cfg)
+	}
+	got.Config.Workday.Start = "7"
+	body, _ = json.Marshal(got.Config)
+	if code := call(t, srv2, "PUT", "/api/settings", string(body), nil); code != http.StatusUnprocessableEntity || fs.applied != 1 {
+		t.Fatalf("bad hours accepted: %d", code)
+	}
+	if code := call(t, srv2, "PUT", "/api/settings", `{"nope":1}`, nil); code != http.StatusBadRequest {
+		t.Fatalf("unknown field: %d", code)
 	}
 }

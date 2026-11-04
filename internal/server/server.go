@@ -12,23 +12,47 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"baca/internal/activity"
+	"baca/internal/config"
 	"baca/internal/tempo"
 	"baca/internal/worklog"
 )
 
 type Server struct {
 	Store    *worklog.Store
-	Tempo    *tempo.Client // nil when the Tempo config is missing
-	TempoErr string        // why Tempo is not available
-	Web      fs.FS         // must hold index.html
+	Web      fs.FS    // must hold index.html
+	Settings Settings // nil: no settings screen
 
-	Activity  activity.Log        // where the probes write
-	Collector *activity.Collector // nil when collecting is off
-
+	state atomic.Pointer[State]
 	logMu sync.Mutex
+}
+
+// State is what the settings can change while the server runs; it is swapped as a whole.
+type State struct {
+	Tempo     *tempo.Client // nil when Jira/Tempo credentials are missing
+	TempoErr  string        // why Tempo is not available
+	Activity  activity.Log  // where the probes write
+	Collector *activity.Collector
+	Workday   config.Workday
+}
+
+// Settings reads and applies config.json for the settings screen.
+type Settings interface {
+	Get() config.Config
+	Apply(config.Config) error
+	Path() string
+}
+
+func (s *Server) SetState(st *State) { s.state.Store(st) }
+
+func (s *Server) st() *State {
+	if st := s.state.Load(); st != nil {
+		return st
+	}
+	return &State{}
 }
 
 var ticketRE = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
@@ -45,6 +69,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/days/{date}/logged/delete", s.unlogEntry)
 	mux.HandleFunc("GET /api/tickets", s.tickets)
 	mux.HandleFunc("GET /api/activity/{date}", s.activity)
+	mux.HandleFunc("GET /api/settings", s.getSettings)
+	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	return guard(mux)
 }
 
@@ -95,9 +121,12 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) config(w http.ResponseWriter, r *http.Request) {
-	cfg := map[string]any{"file": s.Store.Path, "tempo": s.Tempo != nil, "tempoError": s.TempoErr}
-	if s.Tempo != nil {
-		cfg["jiraBase"] = s.Tempo.JiraBase()
+	st := s.st()
+	start, end, target := st.Workday.Minutes()
+	cfg := map[string]any{"file": s.Store.FilePath(), "tempo": st.Tempo != nil, "tempoError": st.TempoErr,
+		"workday": map[string]int{"start": start, "end": end, "target": target}, "settings": s.Settings != nil}
+	if st.Tempo != nil {
+		cfg["jiraBase"] = st.Tempo.JiraBase()
 	}
 	writeJSON(w, http.StatusOK, cfg)
 }
@@ -178,8 +207,9 @@ func (s *Server) logDay(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err, nil)
 		return
 	}
-	if s.Tempo == nil {
-		fail(w, http.StatusServiceUnavailable, errors.New("Tempo unavailable: "+s.TempoErr), nil)
+	tc, tempoErr := s.st().Tempo, s.st().TempoErr
+	if tc == nil {
+		fail(w, http.StatusServiceUnavailable, errors.New("Tempo unavailable: "+tempoErr), nil)
 		return
 	}
 	var body struct {
@@ -208,12 +238,12 @@ func (s *Server) logDay(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Minute)
 	defer cancel()
 
-	account, err := s.Tempo.AccountID(ctx)
+	account, err := tc.AccountID(ctx)
 	if err != nil {
 		fail(w, http.StatusBadGateway, err, &v)
 		return
 	}
-	existing, err := s.Tempo.Existing(ctx, account, date)
+	existing, err := tc.Existing(ctx, account, date)
 	if err != nil {
 		fail(w, http.StatusBadGateway, err, &v)
 		return
@@ -225,19 +255,19 @@ func (s *Server) logDay(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		res := LogResult{Entry: e}
-		results = append(results, s.logEntry(ctx, date, account, &existing, res))
+		results = append(results, s.logEntry(ctx, tc, date, account, &existing, res))
 	}
 	day, _ := s.Store.GetDay(date)
 	writeJSON(w, http.StatusOK, map[string]any{"results": results, "day": day})
 }
 
-func (s *Server) logEntry(ctx context.Context, date time.Time, account string, existing *[]tempo.Worklog, res LogResult) LogResult {
+func (s *Server) logEntry(ctx context.Context, tc *tempo.Client, date time.Time, account string, existing *[]tempo.Worklog, res LogResult) LogResult {
 	e := res.Entry
 	if !ticketRE.MatchString(e.Ticket) {
 		res.Status, res.Error = "skipped", "no valid ticket"
 		return res
 	}
-	issueID, err := s.Tempo.IssueID(ctx, e.Ticket)
+	issueID, err := tc.IssueID(ctx, e.Ticket)
 	if err != nil {
 		res.Status, res.Error = "error", err.Error()
 		return res
@@ -252,7 +282,7 @@ func (s *Server) logEntry(ctx context.Context, date time.Time, account string, e
 		}
 	}
 	if res.WorklogID == "" {
-		id, err := s.Tempo.Create(ctx, tempo.NewWorklog{AccountID: account, IssueID: issueID, Start: start, Seconds: secs, Description: e.Description()})
+		id, err := tc.Create(ctx, tempo.NewWorklog{AccountID: account, IssueID: issueID, Start: start, Seconds: secs, Description: e.Description()})
 		if err != nil {
 			res.Status, res.Error = "error", err.Error()
 			return res
@@ -274,14 +304,15 @@ type loggedReq struct {
 
 // withLogged runs fn for one logged entry of the day the user confirmed (hash), holding the
 // Tempo lock. fn talks to Tempo first and changes the file only after Tempo accepted it.
-func (s *Server) withLogged(w http.ResponseWriter, r *http.Request, fn func(ctx context.Context, date time.Time, req loggedReq, e worklog.Entry) (worklog.DayView, int, error)) {
+func (s *Server) withLogged(w http.ResponseWriter, r *http.Request, fn func(ctx context.Context, tc *tempo.Client, date time.Time, req loggedReq, e worklog.Entry) (worklog.DayView, int, error)) {
 	date, err := parseDate(r)
 	if err != nil {
 		fail(w, http.StatusBadRequest, err, nil)
 		return
 	}
-	if s.Tempo == nil {
-		fail(w, http.StatusServiceUnavailable, errors.New("Tempo unavailable: "+s.TempoErr), nil)
+	tc, tempoErr := s.st().Tempo, s.st().TempoErr
+	if tc == nil {
+		fail(w, http.StatusServiceUnavailable, errors.New("Tempo unavailable: "+tempoErr), nil)
 		return
 	}
 	var req loggedReq
@@ -315,7 +346,7 @@ func (s *Server) withLogged(w http.ResponseWriter, r *http.Request, fn func(ctx 
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), time.Minute)
 	defer cancel()
-	day, status, err := fn(ctx, date, req, *entry)
+	day, status, err := fn(ctx, tc, date, req, *entry)
 	if err != nil {
 		if day.Date == "" {
 			day = v
@@ -328,7 +359,7 @@ func (s *Server) withLogged(w http.ResponseWriter, r *http.Request, fn func(ctx 
 
 // updateLogged sends a new ticket/description of a logged entry to Tempo, then to the file.
 func (s *Server) updateLogged(w http.ResponseWriter, r *http.Request) {
-	s.withLogged(w, r, func(ctx context.Context, date time.Time, req loggedReq, e worklog.Entry) (worklog.DayView, int, error) {
+	s.withLogged(w, r, func(ctx context.Context, tc *tempo.Client, date time.Time, req loggedReq, e worklog.Entry) (worklog.DayView, int, error) {
 		ticket := strings.ToUpper(strings.TrimSpace(req.Ticket))
 		desc := strings.Join(strings.Fields(req.Desc), " ")
 		if desc == "Continue task" {
@@ -341,22 +372,22 @@ func (s *Server) updateLogged(w http.ResponseWriter, r *http.Request) {
 			v, err := s.Store.GetDay(date)
 			return v, http.StatusInternalServerError, err
 		}
-		account, err := s.Tempo.AccountID(ctx)
+		account, err := tc.AccountID(ctx)
 		if err != nil {
 			return worklog.DayView{}, http.StatusBadGateway, err
 		}
-		issueID, err := s.Tempo.IssueID(ctx, ticket)
+		issueID, err := tc.IssueID(ctx, ticket)
 		if err != nil {
 			return worklog.DayView{}, http.StatusBadGateway, err
 		}
 		ne := e
 		ne.Ticket, ne.Desc = ticket, desc
 		nw := tempo.NewWorklog{AccountID: account, IssueID: issueID, Start: date.Add(time.Duration(e.Start) * time.Minute), Seconds: e.Minutes() * 60, Description: ne.Description()}
-		if err := s.Tempo.Update(ctx, e.WorklogID, nw, ticket != e.Ticket); err != nil {
+		if err := tc.Update(ctx, e.WorklogID, nw, ticket != e.Ticket); err != nil {
 			return worklog.DayView{}, http.StatusBadGateway, fmt.Errorf("Tempo rejected the change: %w", err)
 		}
 		// make sure Tempo really holds the change before the file says so
-		got, err := s.Tempo.Get(ctx, e.WorklogID)
+		got, err := tc.Get(ctx, e.WorklogID)
 		if err != nil {
 			return worklog.DayView{}, http.StatusBadGateway, fmt.Errorf("change sent, but it cannot be checked in Tempo: %w", err)
 		}
@@ -373,8 +404,8 @@ func (s *Server) updateLogged(w http.ResponseWriter, r *http.Request) {
 
 // unlogEntry deletes the worklog in Tempo and turns the entry back into an open block.
 func (s *Server) unlogEntry(w http.ResponseWriter, r *http.Request) {
-	s.withLogged(w, r, func(ctx context.Context, date time.Time, req loggedReq, e worklog.Entry) (worklog.DayView, int, error) {
-		if err := s.Tempo.Delete(ctx, e.WorklogID); err != nil {
+	s.withLogged(w, r, func(ctx context.Context, tc *tempo.Client, date time.Time, req loggedReq, e worklog.Entry) (worklog.DayView, int, error) {
+		if err := tc.Delete(ctx, e.WorklogID); err != nil {
 			return worklog.DayView{}, http.StatusBadGateway, fmt.Errorf("Tempo did not delete the worklog: %w", err)
 		}
 		v, err := s.Store.UnmarkLogged(date, e.Key())
@@ -393,7 +424,8 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err, nil)
 		return
 	}
-	spans, err := s.Activity.Read(date.Format("2006-01-02"))
+	st := s.st()
+	spans, err := st.Activity.Read(date.Format("2006-01-02"))
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err, nil)
 		return
@@ -407,8 +439,42 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	probes := []activity.ProbeStatus{}
-	if s.Collector != nil {
-		probes = s.Collector.Status()
+	if st.Collector != nil {
+		probes = st.Collector.Status()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"probes": probes, "day": activity.Analyze(spans, known)})
+}
+
+// getSettings returns config.json with every secret masked.
+func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
+	if s.Settings == nil {
+		fail(w, http.StatusNotFound, errors.New("settings unavailable"), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": s.Settings.Path(), "config": s.Settings.Get().Masked(), "mask": config.Mask})
+}
+
+// putSettings saves the edited config (masked secrets keep their stored values) and applies it.
+func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
+	if s.Settings == nil {
+		fail(w, http.StatusNotFound, errors.New("settings unavailable"), nil)
+		return
+	}
+	var sent config.Config
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&sent); err != nil {
+		fail(w, http.StatusBadRequest, err, nil)
+		return
+	}
+	c := config.Merge(sent, s.Settings.Get())
+	if err := c.Validate(); err != nil {
+		fail(w, http.StatusUnprocessableEntity, err, nil)
+		return
+	}
+	if err := s.Settings.Apply(c); err != nil {
+		fail(w, http.StatusInternalServerError, err, nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": s.Settings.Path(), "config": s.Settings.Get().Masked(), "mask": config.Mask})
 }

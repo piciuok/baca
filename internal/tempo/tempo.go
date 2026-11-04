@@ -43,11 +43,16 @@ func LoadConfig(path string) (Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("%s: %w", path, err)
 	}
+	return Prepare(c)
+}
+
+// Prepare fills the default Tempo URL and checks that the credentials are there.
+func Prepare(c Config) (Config, error) {
 	if c.TempoBaseURL == "" {
 		c.TempoBaseURL = defaultTempoBase
 	}
 	if c.JiraBaseURL == "" || c.AccountEmail == "" || c.Tokens.Jira == "" || c.Tokens.Tempo == "" {
-		return c, fmt.Errorf("%s: missing jiraBaseUrl, accountEmail, tokens.jira or tokens.temp", path)
+		return c, fmt.Errorf("missing the Jira address, e-mail, Jira token or Tempo token (Settings → Jira and Tempo)")
 	}
 	return c, nil
 }

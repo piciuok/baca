@@ -28,6 +28,19 @@ type Store struct {
 
 func NewStore(path string) *Store { return &Store{Path: path, Now: time.Now} }
 
+// SetPath switches to another worklog file (settings changed).
+func (s *Store) SetPath(p string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Path = p
+}
+
+func (s *Store) FilePath() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Path
+}
+
 type DayView struct {
 	Date    string   `json:"date"`
 	Header  string   `json:"header"`
