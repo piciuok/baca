@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="baca">
+  <title>baca</title>
+  <defs>
+    <clipPath id="crown"><path d="M82 158 C82 116 102 98 128 98 C154 98 174 116 174 158 Z"/></clipPath>
+    <linearGradient id="felt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3f48"/><stop offset="1" stop-color="#1b1e23"/>
+    </linearGradient>
+  </defs>
+  <!-- the day: track and the part already worked -->
+  <circle cx="128" cy="128" r="112" fill="none" stroke="#9aa0a6" stroke-opacity=".35" stroke-width="16"/>
+  <circle cx="128" cy="128" r="112" fill="none" stroke="#2f81f7" stroke-width="16" stroke-linecap="round"
+          stroke-dasharray="510 704" transform="rotate(-90 128 128)"/>
+  <!-- highlander hat: brim, crown, band of cowrie shells -->
+  <ellipse cx="128" cy="160" rx="86" ry="21" fill="#15171b"/>
+  <ellipse cx="128" cy="156" rx="80" ry="15" fill="#262a31"/>
+  <path d="M82 158 C82 116 102 98 128 98 C154 98 174 116 174 158 Z" fill="url(#felt)"/>
+  <g clip-path="url(#crown)">
+    <rect x="70" y="128" width="116" height="22" fill="#14161a"/>
+  </g>
+  <g fill="#f4efe2" stroke="#b9ae93" stroke-width="1.5">
+    <ellipse cx="96" cy="139" rx="6" ry="8"/><ellipse cx="112" cy="139" rx="6" ry="8"/>
+    <ellipse cx="128" cy="139" rx="6" ry="8"/><ellipse cx="144" cy="139" rx="6" ry="8"/>
+    <ellipse cx="160" cy="139" rx="6" ry="8"/>
+  </g>
+  <g stroke="#8b8167" stroke-width="1.6" stroke-linecap="round">
+    <path d="M96 134v10M112 134v10M128 134v10M144 134v10M160 134v10"/>
+  </g>
+  <!-- a feather tucked into the band -->
+  <path d="M168 136 C182 112 194 98 206 92 C200 108 188 124 172 140 Z" fill="#c0392b"/>
+  <path d="M170 138 C184 118 196 104 204 95" stroke="#7d1f15" stroke-width="1.5" fill="none"/>
+</svg>
