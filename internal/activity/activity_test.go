@@ -284,3 +284,40 @@ func TestGitLabProbe(t *testing.T) {
 		t.Fatalf("suggestions %+v", d.Suggestions)
 	}
 }
+
+func TestJiraProbe(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/api/3/myself":
+			io.WriteString(w, `{"accountId":"me"}`)
+		case r.URL.Path == "/rest/api/3/search/jql":
+			b, _ := io.ReadAll(r.Body)
+			if !strings.Contains(string(b), `updatedBy(\"me\", \"2026/11/03\", \"2026/11/05\")`) {
+				t.Errorf("jql %s", b)
+			}
+			io.WriteString(w, `{"issues":[{"key":"ABC-3","fields":{"summary":"Export"}}]}`)
+		case r.URL.Path == "/rest/api/3/issue/ABC-3/changelog":
+			io.WriteString(w, `{"values":[
+			 {"author":{"accountId":"me"},"created":"2026-11-04T09:00:00.000+0000","items":[{"field":"status","fromString":"To Do","toString":"In Progress"}]},
+			 {"author":{"accountId":"me"},"created":"2026-11-04T10:00:00.000+0000","items":[{"field":"timespent"},{"field":"WorklogId"}]},
+			 {"author":{"accountId":"other"},"created":"2026-11-04T11:00:00.000+0000","items":[{"field":"status"}]}]}`)
+		case r.URL.Path == "/rest/api/3/issue/ABC-3/comment":
+			io.WriteString(w, `{"comments":[{"author":{"accountId":"me"},"created":"2026-11-04T12:00:00.000+0000"},{"author":{"accountId":"other"},"created":"2026-11-04T12:30:00.000+0000"}]}`)
+		default:
+			http.Error(w, "nf", 404)
+		}
+	}))
+	defer srv.Close()
+	p := NewJiraProbe(JiraAuth{BaseURL: srv.URL, Email: "a@example.com", Token: "t"})
+	now := time.Date(2026, 11, 4, 15, 0, 0, 0, time.UTC).In(time.Local)
+	out, err := p.Tick(context.Background(), now)
+	if err != nil || len(out) != 2 {
+		t.Fatalf("%v %+v", err, out)
+	}
+	if out[0].Title != "ABC-3 Export: status To Do → In Progress" || out[1].Title != "ABC-3 Export: comment" || out[0].App != "Jira" {
+		t.Fatalf("%+v", out)
+	}
+	if out[1].To != clock(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC).In(time.Local)) {
+		t.Fatalf("comment time %s", out[1].To)
+	}
+}

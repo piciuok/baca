@@ -55,6 +55,9 @@ type Config struct {
 	Claude  ClaudeConfig `json:"claude"`
 	Codex   CodexConfig  `json:"codex"`
 	GitLab  GitLabConfig `json:"gitlab"`
+	Jira    JiraConfig   `json:"jira"`
+
+	JiraAuth JiraAuth `json:"-"` // filled from the Jira/Tempo credentials of config.json
 }
 
 type SystemConfig struct {
@@ -121,6 +124,9 @@ func (c Config) Probes() []Probe {
 	}
 	if on(c.GitLab.Enabled) && len(c.GitLab.Instances) > 0 {
 		out = append(out, NewGitLabProbe(c.GitLab))
+	}
+	if on(c.Jira.Enabled) && c.JiraAuth.Token != "" {
+		out = append(out, NewJiraProbe(c.JiraAuth))
 	}
 	return out
 }

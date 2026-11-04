@@ -83,6 +83,7 @@ func main() {
 		log.Printf("Tempo disabled: %v", err)
 	} else {
 		s.Tempo = tempo.New(cfg)
+		local.Activity.JiraAuth = activity.JiraAuth{BaseURL: cfg.JiraBaseURL, Email: cfg.AccountEmail, Token: cfg.Tokens.Jira}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
