@@ -28,6 +28,15 @@ func StateDir() string {
 	return filepath.Join(home, ".local", "state", "baca")
 }
 
+// start runs a command in the background and reaps it, so no zombie is left behind.
+func start(cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go cmd.Wait()
+	return nil
+}
+
 func has(bin string) bool {
 	_, err := exec.LookPath(bin)
 	return err == nil
@@ -50,28 +59,43 @@ const relaunchScript = `while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec
 func spawnTray(exe string) error {
 	cmd := exec.Command("/bin/sh", "-c", relaunchScript, exe, strconv.Itoa(os.Getpid()))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// the new tray logs where the first one did
+	if out, errf, err := logFiles(); err == nil {
+		defer out.Close()
+		defer errf.Close()
+		cmd.Stdout, cmd.Stderr = out, errf
+	}
 	return cmd.Start()
+}
+
+func logFiles() (*os.File, *os.File, error) {
+	dir := StateDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, nil, err
+	}
+	open := func(name string) (*os.File, error) {
+		return os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	}
+	out, err := open("tray.out.log")
+	if err != nil {
+		return nil, nil, err
+	}
+	errf, err := open("tray.err.log")
+	if err != nil {
+		out.Close()
+		return nil, nil, err
+	}
+	return out, errf, nil
 }
 
 // detachTray starts `exe tray --foreground` in its own session with output appended to the
 // logs in StateDir, and does not wait for it.
 func detachTray(exe string) error {
-	dir := StateDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	open := func(name string) (*os.File, error) {
-		return os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	}
-	out, err := open("tray.out.log")
+	out, errf, err := logFiles()
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	errf, err := open("tray.err.log")
-	if err != nil {
-		return err
-	}
 	defer errf.Close()
 	cmd := exec.Command(exe, "tray", "--foreground")
 	cmd.Stdout, cmd.Stderr = out, errf

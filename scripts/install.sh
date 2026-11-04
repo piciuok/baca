@@ -14,6 +14,8 @@
 #   BACA_NO_START=1       only put the binary in place
 set -eu
 
+# Everything runs from main at the very end, so a download cut short never runs half a script.
+main() {
 repo="piciuok/baca"
 bindir="${HOME}/.local/bin"
 user_path="$PATH"
@@ -44,6 +46,8 @@ case "$arch" in
   *) die "unsupported architecture: $arch" ;;
 esac
 has curl || die "curl is needed"
+has sha256sum || has shasum || die "sha256sum or shasum is needed to check the download"
+fetch() { curl --proto '=https' --tlsv1.2 -fsSL "$@"; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -59,18 +63,20 @@ verify() {
 
 # ---------------------------------------------------------------- baca
 tag="${BACA_VERSION:-}"
-[ -n "$tag" ] || tag=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
+[ -n "$tag" ] || tag=$(fetch "https://api.github.com/repos/$repo/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
 [ -n "$tag" ] || die "could not find the latest release"
 ver="${tag#v}"
 name="baca_${ver}_${os}_${arch}.tar.gz"
 base="https://github.com/$repo/releases/download/$tag"
 
 say "baca $tag ($os/$arch)"
-curl -fsSL -o "$tmp/$name" "$base/$name"
-curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt"
+fetch -o "$tmp/$name" "$base/$name"
+fetch -o "$tmp/checksums.txt" "$base/checksums.txt"
 verify "$tmp/$name" "$tmp/checksums.txt"
 tar -C "$tmp" -xzf "$tmp/$name"
 mkdir -p "$bindir"
+was_running=""
+"$bindir/baca" version >/dev/null 2>&1 && (curl -fs -o /dev/null --max-time 2 http://127.0.0.1:7788/favicon.png) && was_running=1
 install -m 0755 "$tmp/${name%.tar.gz}/baca" "$bindir/baca.new" && mv "$bindir/baca.new" "$bindir/baca"
 echo "Installed $bindir/baca ($("$bindir/baca" version))"
 
@@ -106,7 +112,15 @@ fi
 if [ -z "${BACA_NO_START:-}" ]; then
   say "Start at login"
   "$bindir/baca" install
-  "$bindir/baca" start
+  if [ -n "$was_running" ]; then
+    if [ "$os" = darwin ] && launchctl print "gui/$(id -u)/pl.piciuok.baca" >/dev/null 2>&1; then
+      launchctl kickstart -k "gui/$(id -u)/pl.piciuok.baca" && echo "Restarted the running baca with the new version."
+    else
+      echo "An older baca is still running: quit it from its menu, then run: baca start"
+    fi
+  else
+    "$bindir/baca" start
+  fi
   echo "baca is running: the ring in the menu bar / tray. Open the UI with: baca open"
   if [ "$os" = darwin ]; then
     echo "Window titles need the Accessibility permission for $bindir/baca"
@@ -114,3 +128,6 @@ if [ -z "${BACA_NO_START:-}" ]; then
   fi
 fi
 case ":$user_path:" in *":$bindir:"*) ;; *) echo; echo "Add $bindir to your PATH to run baca from a shell." ;; esac
+}
+
+main "$@"

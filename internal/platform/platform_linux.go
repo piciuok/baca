@@ -1,14 +1,17 @@
 package platform
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/godbus/dbus/v5"
 )
 
-func Open(target string) error { return exec.Command("xdg-open", target).Start() }
+func Open(target string) error { return start(exec.Command("xdg-open", target)) }
 
 func Info(title, msg string) {
 	switch {
@@ -25,7 +28,7 @@ func Notify(n Notification) {
 	if !has("notify-send") {
 		return
 	}
-	_ = exec.Command("notify-send", "--app-name=baca", "--", n.Title, trunc(n.Message, 300)).Start()
+	_ = start(exec.Command("notify-send", "--app-name=baca", "--", n.Title, trunc(n.Message, 300)))
 }
 
 // Relaunch starts the tray anew from exe: a fresh process waits for this one, which must quit.
@@ -80,4 +83,21 @@ func desktopQuote(s string) string {
 		return s
 	}
 	return `"` + strings.NewReplacer(`\`, `\\\\`, `"`, `\"`, "`", "\\`", "$", `\$`).Replace(s) + `"`
+}
+
+// TrayHost tells whether the desktop can show a tray icon: the StatusNotifier watcher must be on
+// the session bus. Vanilla GNOME has none without the AppIndicator extension.
+func TrayHost() error {
+	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
+		return errors.New("no desktop session bus (DBUS_SESSION_BUS_ADDRESS): run baca serve instead of the tray")
+	}
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return fmt.Errorf("session bus: %w", err)
+	}
+	var has bool
+	if err := conn.BusObject().Call("org.freedesktop.DBus.NameHasOwner", 0, "org.kde.StatusNotifierWatcher").Store(&has); err != nil || !has {
+		return errors.New("this desktop shows no tray icons (on GNOME install the AppIndicator extension); baca runs anyway: baca open")
+	}
+	return nil
 }

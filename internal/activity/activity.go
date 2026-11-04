@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -103,10 +104,14 @@ func (c *Config) Defaults(worklogFile string) {
 		c.System.IgnoreApps = []string{"1Password", "Bitwarden", "KeePassXC", "Keychain Access", "Dostęp do pęku kluczy"}
 	}
 	if len(c.System.Meetings) == 0 {
-		c.System.Meetings = map[string]string{
+		c.System.Meetings = map[string]string{ // the keys are app names: macOS processes, Linux WM_CLASS
 			"Slack":           `(?i)huddle|rozmowa`,
 			"zoom.us":         `(?i)zoom meeting|spotkanie|meeting`,
 			"Microsoft Teams": `(?i)meeting|spotkanie|call|połączenie|rozmowa`,
+		}
+		if runtime.GOOS == "linux" {
+			c.System.Meetings["zoom"] = `(?i)zoom meeting|spotkanie|meeting`
+			c.System.Meetings["teams-for-linux"] = `(?i)meeting|spotkanie|call|połączenie|rozmowa`
 		}
 	}
 }

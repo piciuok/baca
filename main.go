@@ -50,6 +50,7 @@ Common flags (tray, serve): -addr, -config, -file, -collect=false
 var version = "dev"
 
 func main() {
+	platform.EnsurePath() // launchd and XDG autostart start with a bare PATH
 	args := os.Args[1:]
 	cmd := "tray"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -173,6 +174,17 @@ func cmdRun(args []string, withTray bool) error {
 		return nil
 	}
 
+	if withTray {
+		// the same git, gh, glab, claude and codex as in the terminal
+		platform.UseLoginShellPath()
+		if err := platform.TrayHost(); err != nil {
+			if os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" && runtime.GOOS == "linux" {
+				return err
+			}
+			log.Printf("tray: %v", err)
+			go platform.Notify(platform.Notification{Title: "baca is running without an icon", Message: err.Error()})
+		}
+	}
 	host, _, err := net.SplitHostPort(*addr)
 	if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
 		return fmt.Errorf("-addr must be on localhost, got %q", *addr)
@@ -258,7 +270,12 @@ func cmdRun(args []string, withTray bool) error {
 		return err
 	}
 	if from := upd.UpdatedFrom(); from != "" {
-		go platform.Notify(platform.Notification{Title: "baca " + version, Message: "Updated from " + from + "."})
+		msg := "Updated from " + from + "."
+		if runtime.GOOS == "darwin" {
+			// the Accessibility grant is tied to the binary: a new one may need it again
+			msg += " If window titles stop, switch baca off and on in System Settings → Privacy & Security → Accessibility."
+		}
+		go platform.Notify(platform.Notification{Title: "baca " + version, Message: msg})
 	}
 	go func() {
 		select {

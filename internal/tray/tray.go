@@ -146,7 +146,7 @@ func (t *Tray) onReady() {
 					err = platform.AutostartInstall(exe)
 				}
 				if err != nil {
-					platform.Info("baca", err.Error())
+					go platform.Info("baca", err.Error()) // a dialog must not stall the menu
 				}
 				refresh()
 			case <-quit.ClickedCh:

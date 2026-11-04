@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func Open(target string) error { return exec.Command("/usr/bin/open", target).Start() }
+func Open(target string) error { return start(exec.Command("/usr/bin/open", target)) }
 
 // Info shows a message the user asked for as a dialog (notifications may be muted).
 func Info(title, msg string) {
@@ -22,10 +22,10 @@ func Notify(n Notification) {
 		if n.Open != "" {
 			args = append(args, "-open", n.Open)
 		}
-		_ = exec.Command("terminal-notifier", args...).Start()
+		_ = start(exec.Command("terminal-notifier", args...))
 		return
 	}
-	_ = exec.Command("/usr/bin/osascript", "-e", fmt.Sprintf("display notification %s with title %s", asq(trunc(n.Message, 240)), asq(n.Title))).Start()
+	_ = start(exec.Command("/usr/bin/osascript", "-e", fmt.Sprintf("display notification %s with title %s", asq(trunc(n.Message, 240)), asq(n.Title))))
 }
 
 func asq(s string) string {
@@ -37,7 +37,7 @@ func asq(s string) string {
 // waits for this one, which must quit (quit=true).
 func Relaunch(exe string) (quit bool, err error) {
 	if os.Getenv("XPC_SERVICE_NAME") == launchLabel {
-		return false, exec.Command("/bin/launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/%s", os.Getuid(), launchLabel)).Start()
+		return false, start(exec.Command("/bin/launchctl", "kickstart", "-k", fmt.Sprintf("gui/%d/%s", os.Getuid(), launchLabel)))
 	}
 	return true, spawnTray(exe)
 }
@@ -71,7 +71,7 @@ func AutostartEnabled() bool {
 // item and the Accessibility permission). It does not start a second copy now.
 func AutostartInstall(exe string) error {
 	logDir := StateDir()
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return err
 	}
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -104,3 +104,6 @@ func AutostartUninstall() error {
 	}
 	return err
 }
+
+// TrayHost: the macOS menu bar always takes the icon.
+func TrayHost() error { return nil }
