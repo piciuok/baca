@@ -35,6 +35,7 @@ Usage:
   baca [tray] [--foreground]   menu bar / tray icon with the UI server; from a terminal
                                      it starts in the background and returns
   baca serve [-open]           UI server only, no icon (development)
+  baca start                   start the icon in the background (if it is not running)
   baca open                    open the UI (with its token) in the browser
   baca install | uninstall     copies the binary to ~/.local/bin and enables start at login
   baca update [--check] [--pre] [--force]
@@ -58,6 +59,8 @@ func main() {
 		err = cmdRun(args, true)
 	case "serve":
 		err = cmdRun(args, false)
+	case "start":
+		err = cmdStart(args)
 	case "open":
 		err = cmdOpen(args)
 	case "install":
@@ -379,4 +382,21 @@ func cmdOpen(args []string) error {
 		return err
 	}
 	return platform.Open("http://" + *addr + "/?t=" + token)
+}
+
+// cmdStart starts the tray in the background unless something already serves the address.
+func cmdStart(args []string) error {
+	fs := flag.NewFlagSet("start", flag.ExitOnError)
+	addr := fs.String("addr", env("BACA_ADDR", "127.0.0.1:7788"), "server address")
+	fs.Parse(args)
+	if c, err := net.DialTimeout("tcp", *addr, time.Second); err == nil {
+		c.Close()
+		fmt.Println("baca is already running on", *addr)
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return platform.StartTray(exe)
 }
