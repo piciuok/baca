@@ -13,8 +13,9 @@ on:
         description: "Existing tag to release, e.g. v0.3.0"
         required: true
 
+# read-only by default; only the job that publishes the release may write
 permissions:
-  contents: write
+  contents: read
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
@@ -76,6 +77,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
