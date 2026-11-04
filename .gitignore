@@ -4,3 +4,5 @@ worklog.txt
 config.json
 .idea/
 /activity/
+/bin/
+/dist/
